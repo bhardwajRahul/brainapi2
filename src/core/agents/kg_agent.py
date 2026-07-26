@@ -56,7 +56,6 @@ from src.core.agents.tools.kg_agent.KGAgentCreateRelationshipTool import (
     KGAgentCreateRelationshipTool,
 )
 from src.core.agents.tools.kg_agent.KGAgentCreateNodeTool import KGAgentCreateNodeTool
-from src.utils.tokens import token_detail_from_token_counts
 
 MAX_RECURSION_LIMIT = 50
 MAX_RECURSION_LIMIT_GRAPH_CONSOLIDATOR = 50
@@ -99,8 +98,7 @@ class KGAgent:
             database_desc (str): A brief description of the knowledge graph or database this agent will operate on.
 
         Description:
-            Stores provided adapters and clients on the instance, sets the agent to None, and initializes token accounting fields:
-            `input_tokens`, `output_tokens`, `cached_tokens`, `reasoning_tokens` set to 0 and `token_detail` set to None.
+            Stores provided adapters and clients on the instance and sets the agent to None.
         """
         self.llm_adapter = llm_adapter
         self.cache_adapter = cache_adapter
@@ -109,11 +107,6 @@ class KGAgent:
         self.embeddings = embeddings
         self.agent = None
         self.database_desc = database_desc
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.cached_tokens = 0
-        self.reasoning_tokens = 0
-        self.token_detail = None
         self._agent_type = None
         self._agent_brain_id = None
 
@@ -582,9 +575,9 @@ class KGAgent:
         )
         def _invoke_agent_with_retry():
             """
-            Invoke the graph-consolidator agent with a timeout and update token accounting from the response.
+            Invoke the graph-consolidator agent with a timeout.
 
-            Waits up to `timeout` seconds for the agent invocation to complete. For any returned message that contains `usage_metadata`, updates the agent's token counters and `token_detail`. Returns the agent response dictionary.
+            Waits up to `timeout` seconds for the agent invocation to complete. Returns the agent response dictionary.
 
             Returns:
                 dict: The agent response.
@@ -596,16 +589,6 @@ class KGAgent:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent)
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = token_detail_from_token_counts(
-                                self.input_tokens,
-                                self.output_tokens,
-                                self.cached_tokens,
-                                self.reasoning_tokens,
-                                "kg_agent",
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -630,30 +613,3 @@ class KGAgent:
             raise
 
         return "OK"
-
-    def _update_token_counts(self, usage_metadata: dict):
-        """
-        Update the agent's token counters from LLM usage metadata.
-
-        Reads token counts from the provided `usage_metadata` mapping and increments the agent's
-        internal counters: `input_tokens`, `output_tokens`, `cached_tokens`, and `reasoning_tokens`.
-        Missing entries are treated as zero.
-
-        Parameters:
-            usage_metadata (dict): Usage metadata containing any of the following keys:
-                - "input_tokens": total input token count (int)
-                - "output_tokens": total output token count (int)
-                - "input_token_details": dict with "cache_read" (int) for cached input tokens
-                - "output_token_details": dict with "reasoning" (int) for reasoning/output tokens
-        """
-        # Base counts
-        self.input_tokens += usage_metadata.get("input_tokens", 0)
-        self.output_tokens += usage_metadata.get("output_tokens", 0)
-
-        # Input details (caching)
-        input_details = usage_metadata.get("input_token_details", {})
-        self.cached_tokens += input_details.get("cache_read", 0)
-
-        # Output details (reasoning)
-        output_details = usage_metadata.get("output_token_details", {})
-        self.reasoning_tokens += output_details.get("reasoning", 0)

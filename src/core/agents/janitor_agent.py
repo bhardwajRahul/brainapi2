@@ -54,7 +54,6 @@ from src.core.agents.tools.janitor_agent.JanitorAgentSearchRelationshipTool impo
     JanitorAgentSearchRelationshipsTool,
 )
 from src.utils.cleanup import strip_properties
-from src.utils.tokens import token_detail_from_token_counts
 
 
 HISTORY_MAX_MESSAGES = 25
@@ -106,8 +105,6 @@ class JanitorAgent:
                 vector_store (VectorStoreAdapter): Adapter for vector search and retrieval.
                 embeddings (EmbeddingsAdapter): Adapter to compute embeddings for text.
                 database_desc (str): Human-readable description of the target database.
-
-        Initializes internal token counters and token detail storage.
         """
         self.llm_adapter = llm_adapter
         self.kg = kg
@@ -115,11 +112,6 @@ class JanitorAgent:
         self.embeddings = embeddings
         self.agent = None
         self.database_desc = database_desc
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.cached_tokens = 0
-        self.reasoning_tokens = 0
-        self.token_detail = None
 
     def _get_tools(self, brain_id: str = "default") -> List[BaseTool]:
         """
@@ -366,16 +358,6 @@ class JanitorAgent:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = token_detail_from_token_counts(
-                                self.input_tokens,
-                                self.output_tokens,
-                                self.cached_tokens,
-                                self.reasoning_tokens,
-                                "janitor_agent",
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -527,16 +509,6 @@ class JanitorAgent:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = token_detail_from_token_counts(
-                                self.input_tokens,
-                                self.output_tokens,
-                                self.cached_tokens,
-                                self.reasoning_tokens,
-                                "janitor_agent",
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -704,16 +676,6 @@ class JanitorAgent:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = token_detail_from_token_counts(
-                                self.input_tokens,
-                                self.output_tokens,
-                                self.cached_tokens,
-                                self.reasoning_tokens,
-                                "janitor_agent",
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -771,26 +733,3 @@ class JanitorAgent:
             return "OK"
         else:
             return structured_response
-
-    def _update_token_counts(self, usage_metadata: dict):
-        """
-        Update the agent's cumulative token counters from a message's usage metadata.
-
-        Parameters:
-            usage_metadata (dict): A mapping containing token usage information. Recognized keys:
-                - "input_tokens": number to add to `input_tokens`
-                - "output_tokens": number to add to `output_tokens`
-                - "input_token_details": dict with optional "cache_read" to add to `cached_tokens`
-                - "output_token_details": dict with optional "reasoning" to add to `reasoning_tokens`
-        """
-        # Base counts
-        self.input_tokens += usage_metadata.get("input_tokens", 0)
-        self.output_tokens += usage_metadata.get("output_tokens", 0)
-
-        # Input details (caching)
-        input_details = usage_metadata.get("input_token_details", {})
-        self.cached_tokens += input_details.get("cache_read", 0)
-
-        # Output details (reasoning)
-        output_details = usage_metadata.get("output_token_details", {})
-        self.reasoning_tokens += output_details.get("reasoning", 0)

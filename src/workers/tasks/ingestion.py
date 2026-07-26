@@ -951,7 +951,7 @@ def consolidate_graph_async(
             tags=["consolidate_graph", "janitor", "kg_agent"],
             metadata=tracing_metadata,
         ):
-            consolidation_response = consolidate_graph(relationships, brain_id=brain_id)
+            consolidate_graph(relationships, brain_id=brain_id)
         try:
             from langchain_core.tracers.langchain import wait_for_all_tracers
 

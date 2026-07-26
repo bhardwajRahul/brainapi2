@@ -383,23 +383,6 @@ class OllamaConfig:
             raise ValueError("Ollama configuration is not complete")
 
 
-class PricingConfig:
-    """
-    Configuration class for the Pricing configuration.
-    """
-
-    def __init__(self):
-        """
-        Initialize pricing configuration from environment variables.
-
-        Attributes:
-            input_token_price (float): Price per input token from INPUT_TOKEN_PRICE, defaults to 0.0 if unset.
-            output_token_price (float): Price per output token from OUTPUT_TOKEN_PRICE, defaults to 0.0 if unset.
-        """
-        self.input_token_price = float(os.getenv("INPUT_TOKEN_PRICE", 0))
-        self.output_token_price = float(os.getenv("OUTPUT_TOKEN_PRICE", 0))
-
-
 class SpacyConfig:
     """
     Configuration class for the Spacy configuration.
@@ -424,7 +407,7 @@ class Config:
         """
         Initialize the application's central configuration by composing environment-backed sub-configurations and loading runtime flags.
 
-        This constructor instantiates Azure, Redis, Neo4j, Milvus, Embeddings, Mongo, GCP, Celery, and Pricing configuration objects, reads the RUN_GRAPH_CONSOLIDATOR flag into `run_graph_consolidator`, and loads the `BRAINPAT_TOKEN` into `brainpat_token`.
+        This constructor instantiates Azure, Redis, Neo4j, Milvus, Embeddings, Mongo, GCP, and Celery configuration objects, reads the RUN_GRAPH_CONSOLIDATOR flag into `run_graph_consolidator`, and loads the `BRAINPAT_TOKEN` into `brainpat_token`.
 
         Raises:
             ValueError: If `BRAINPAT_TOKEN` is not set in the environment.
@@ -529,7 +512,6 @@ class Config:
         self.milvus = MilvusConfig()
         self.mongo = MongoConfig()
         self.celery = CeleryConfig()
-        self.pricing = PricingConfig()
         self.spacy = SpacyConfig()
 
         self.run_graph_consolidator = (

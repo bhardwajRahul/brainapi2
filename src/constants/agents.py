@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from pydantic import BaseModel, Field
-from typing import Dict, Literal, Optional, List, Tuple
+from typing import Literal, Optional, List, Tuple
 import uuid
 
 
@@ -106,8 +106,6 @@ class ArchitectAgentResponse(BaseModel):
 
     new_nodes: List[ArchitectAgentNew]
     relationships: List[ArchitectAgentRelationship]
-    input_tokens: int
-    output_tokens: int
 
 
 class AtomicJanitorAgentWrongRelationship(BaseModel):
@@ -126,25 +124,3 @@ class AtomicJanitorAgentInputOutput(BaseModel):
 
 class GraphConsolidatorOutput(BaseModel):
     tasks: List[str] = Field(default_factory=list)
-
-
-class TokenInputDetail(BaseModel):
-    total: int
-    uncached: int
-    cached: int
-    cache_percentage: float
-
-
-class TokenOutputDetail(BaseModel):
-    total: int
-    regular: int
-    reasoning: int
-    reasoning_percentage: float
-
-
-class TokenDetail(BaseModel):
-    input: TokenInputDetail
-    output: TokenOutputDetail
-    grand_total: int
-    effective_total: int
-    grouped_by_agent: Dict[str, "TokenDetail"] = Field(default_factory=dict)

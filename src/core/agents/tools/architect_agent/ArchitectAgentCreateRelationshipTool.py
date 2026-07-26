@@ -35,7 +35,6 @@ from src.utils.cleanup import strip_properties
 from src.utils.nlp.names import levenshtein_similarity
 from src.utils.serialization.data import is_uuid
 from src.utils.similarity.vectors import cosine_similarity
-from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 
 
 class ArchitectAgentCreateRelationshipTool(BaseTool):
@@ -399,11 +398,6 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                 )
                 self.architect_agent.janitor_agent = janitor_agent
                 self.architect_agent._janitor_agent_brain_id = self.brain_id
-            start_input_tokens = janitor_agent.input_tokens
-            start_output_tokens = janitor_agent.output_tokens
-            start_cached_tokens = janitor_agent.cached_tokens
-            start_reasoning_tokens = janitor_agent.reasoning_tokens
-
             janitor_response: AtomicJanitorAgentInputOutput = (
                 janitor_agent.run_atomic_janitor(
                     input_relationships=input_rels,
@@ -418,17 +412,6 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             print(
                 "[DEBUG (architect_agent_create_relationship)]: Janitor response: ",
                 janitor_response,
-            )
-
-            janitor_token_detail = token_detail_from_token_counts(
-                janitor_agent.input_tokens - start_input_tokens,
-                janitor_agent.output_tokens - start_output_tokens,
-                janitor_agent.cached_tokens - start_cached_tokens,
-                janitor_agent.reasoning_tokens - start_reasoning_tokens,
-                "janitor_agent",
-            )
-            self.architect_agent.token_detail = merge_token_details(
-                [self.architect_agent.token_detail, janitor_token_detail]
             )
 
             required_new_nodes = getattr(janitor_response, "required_new_nodes", [])

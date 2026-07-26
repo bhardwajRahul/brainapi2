@@ -16,7 +16,6 @@ from src.config import config
 from src.constants.kg import Node
 from src.core.agents.scout_agent import ScoutAgent
 from src.core.agents.architect_agent import ArchitectAgent
-from src.core.layers.graph_consolidation.graph_consolidation import consolidate_graph
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.input.agents import (
     cache_adapter,
@@ -25,7 +24,6 @@ from src.services.input.agents import (
     llm_small_adapter,
     vector_store_adapter,
 )
-from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 
 import langsmith
 
@@ -36,7 +34,7 @@ def enrich_kg_from_input(
     """
     Orchestrates enrichment of the knowledge graph from a free-text input.
 
-    Runs the scout and architect agents to extract entities and relationships from the provided input, optionally consolidates the resulting relationships into the graph, and reports token usage and cost metrics. Side effects include updating the knowledge graph and printing debug and cost summaries to standard output.
+    Runs the scout and architect agents to extract entities and relationships from the provided input, and optionally consolidates the resulting relationships into the graph. Side effects include updating the knowledge graph and printing debug summaries to standard output.
 
     Parameters:
         input (str): Free-text content to process and ingest into the knowledge graph.
@@ -105,7 +103,6 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
         return
 
     if config.pipeline_mode == "accurate":
-        token_details = []
         print(f"[DEBUG (ingestion_session_id)]: {ingestion_session_id}")
 
         entities = scout_agent.run(
@@ -113,15 +110,6 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
             targeting=targeting,
             brain_id=brain_id,
             ingestion_session_id=ingestion_session_id,
-        )
-        token_details.append(
-            token_detail_from_token_counts(
-                scout_agent.input_tokens,
-                scout_agent.output_tokens,
-                scout_agent.cached_tokens,
-                scout_agent.reasoning_tokens,
-                "scout_agent",
-            )
         )
 
         architect_agent.run_tooler(
@@ -131,15 +119,6 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
             brain_id=brain_id,
             timeout=20000,
             ingestion_session_id=ingestion_session_id,
-        )
-        token_details.append(
-            token_detail_from_token_counts(
-                architect_agent.input_tokens,
-                architect_agent.output_tokens,
-                architect_agent.cached_tokens,
-                architect_agent.reasoning_tokens,
-                "architect_agent",
-            )
         )
 
         if config.run_graph_consolidator and architect_agent.session_id:
@@ -191,29 +170,6 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
             print(
                 f"[DEBUG (enrich_kg_from_input)]: Consolidation task {task_result.id} queued"
             )
-
-        token_details = merge_token_details(
-            [
-                scout_agent.token_detail,
-                architect_agent.token_detail,
-            ]
-        )
-
-        print("-----------------------------------")
-        print(
-            f"> Input tokens:   {token_details.input.total} -> ${token_details.input.total * config.pricing.input_token_price}"
-        )
-        print(
-            f"> Output tokens:  {token_details.output.total} -> ${token_details.output.total * config.pricing.output_token_price}"
-        )
-        print(
-            f"> Cost -> ${token_details.input.total * config.pricing.input_token_price + token_details.output.total * config.pricing.output_token_price} for {len(input)} characters"
-        )
-        print(
-            f"> Cost/Character -> ${((token_details.input.total * config.pricing.input_token_price + token_details.output.total * config.pricing.output_token_price) / len(input)):.12f}"
-        )
-        print("> Token details: ", token_details.model_dump_json(indent=2))
-        print("-----------------------------------")
 
     try:
         from langchain_core.tracers.langchain import wait_for_all_tracers

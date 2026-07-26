@@ -68,7 +68,6 @@ from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import IngestionTripleSet
 from src.utils.cleanup import strip_properties
 from src.utils.similarity.vectors import cosine_similarity
-from src.utils.tokens import merge_token_details, token_detail_from_token_counts
 
 # from src.core.agents.tools.kg_agent import (
 #     KGAgentSearchGraphTool,
@@ -155,11 +154,6 @@ class ArchitectAgent:
         self.vector_store = vector_store
         self.embeddings = embeddings
         self.agent = None
-        self.token_detail = None
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.cached_tokens = 0
-        self.reasoning_tokens = 0
         self.relationships_set: List[ArchitectAgentRelationship] = []
         self.used_entities_dict = {}
         self.ingestion_manager = ingestion_manager
@@ -343,8 +337,6 @@ class ArchitectAgent:
             ArchitectAgentResponse: Contains:
                 - new_nodes: list of newly discovered nodes produced by the agent.
                 - relationships: list of relationships the agent created between entities or new nodes.
-                - input_tokens: count of input tokens consumed during this run.
-                - output_tokens: count of output tokens produced during this run.
         """
 
         entities_dict = {entity.uuid: entity for entity in entities}
@@ -356,9 +348,6 @@ class ArchitectAgent:
             targeting=targeting,
             type_="single",
         )
-
-        self.input_tokens = 0
-        self.output_tokens = 0
 
         def _invoke_agent(
             ent: list[ScoutEntity],
@@ -511,21 +500,6 @@ class ArchitectAgent:
                         previous_messages,
                     )
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = merge_token_details(
-                                [
-                                    self.token_detail,
-                                    token_detail_from_token_counts(
-                                        self.input_tokens,
-                                        self.output_tokens,
-                                        self.cached_tokens,
-                                        self.reasoning_tokens,
-                                        "architect_agent",
-                                    ),
-                                ]
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -588,8 +562,6 @@ class ArchitectAgent:
             return ArchitectAgentResponse(
                 new_nodes=[],
                 relationships=[],
-                input_tokens=self.input_tokens,
-                output_tokens=self.output_tokens,
             )
 
         return ArchitectAgentResponse(
@@ -601,8 +573,6 @@ class ArchitectAgent:
                 _to_architect_relationship(relationship)
                 for relationship in all_relationships
             ],
-            input_tokens=self.input_tokens,
-            output_tokens=self.output_tokens,
         )
 
     def _persist_relationships(
@@ -658,11 +628,6 @@ class ArchitectAgent:
                 )
                 self.janitor_agent = janitor_agent
                 self._janitor_agent_brain_id = brain_id
-            start_input_tokens = janitor_agent.input_tokens
-            start_output_tokens = janitor_agent.output_tokens
-            start_cached_tokens = janitor_agent.cached_tokens
-            start_reasoning_tokens = janitor_agent.reasoning_tokens
-
             janitor_response = janitor_agent.run_atomic_janitor(
                 input_relationships=input_rels,
                 text=text,
@@ -670,17 +635,6 @@ class ArchitectAgent:
                 brain_id=brain_id,
                 timeout=300,
                 max_retries=3,
-            )
-
-            janitor_token_detail = token_detail_from_token_counts(
-                janitor_agent.input_tokens - start_input_tokens,
-                janitor_agent.output_tokens - start_output_tokens,
-                janitor_agent.cached_tokens - start_cached_tokens,
-                janitor_agent.reasoning_tokens - start_reasoning_tokens,
-                "janitor_agent",
-            )
-            self.token_detail = merge_token_details(
-                [self.token_detail, janitor_token_detail]
             )
 
             required_new_nodes = getattr(janitor_response, "required_new_nodes", [])
@@ -870,8 +824,6 @@ class ArchitectAgent:
             ArchitectAgentResponse: Contains:
                 - new_nodes: list of newly discovered nodes produced by the agent.
                 - relationships: list of relationships the agent created between entities or new nodes.
-                - input_tokens: count of input tokens consumed during this run.
-                - output_tokens: count of output tokens produced during this run.
         """
 
         triple_entity_registry: Dict[Tuple[str, str], ArchitectAgentEntity] = {}
@@ -963,8 +915,6 @@ class ArchitectAgent:
             type_="single",
         )
 
-        self.input_tokens = 0
-        self.output_tokens = 0
 
         def _invoke_agent(
             ent: list[ScoutEntity],
@@ -1135,21 +1085,6 @@ class ArchitectAgent:
                         fix_content,
                     )
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = merge_token_details(
-                                [
-                                    self.token_detail,
-                                    token_detail_from_token_counts(
-                                        self.input_tokens,
-                                        self.output_tokens,
-                                        self.cached_tokens,
-                                        self.reasoning_tokens,
-                                        "architect_agent",
-                                    ),
-                                ]
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -1212,8 +1147,6 @@ class ArchitectAgent:
             return ArchitectAgentResponse(
                 new_nodes=[],
                 relationships=[],
-                input_tokens=self.input_tokens,
-                output_tokens=self.output_tokens,
             )
 
         relationships_to_persist: List[ArchitectAgentRelationship] = []
@@ -1288,8 +1221,6 @@ class ArchitectAgent:
                 for new_node in all_new_nodes
             ],
             relationships=relationships_to_persist,
-            input_tokens=self.input_tokens,
-            output_tokens=self.output_tokens,
         )
 
     def run_tooler(
@@ -1444,21 +1375,6 @@ class ArchitectAgent:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
-                    for m in response.get("messages", []):
-                        if hasattr(m, "usage_metadata"):
-                            self._update_token_counts(m.usage_metadata)
-                            self.token_detail = merge_token_details(
-                                [
-                                    self.token_detail,
-                                    token_detail_from_token_counts(
-                                        self.input_tokens,
-                                        self.output_tokens,
-                                        self.cached_tokens,
-                                        self.reasoning_tokens,
-                                        "architect_agent",
-                                    ),
-                                ]
-                            )
                     return response
             except FutureTimeoutError:
                 raise TimeoutError(
@@ -1506,25 +1422,3 @@ class ArchitectAgent:
 
         return list(self.relationships_set)
 
-    def _update_token_counts(self, usage_metadata: dict):
-        """
-        Update the agent's token counters from an LLM usage metadata dictionary.
-
-        Parameters:
-            usage_metadata (dict): Metadata containing token usage details. Expected keys:
-                - "input_tokens": integer count of input tokens.
-                - "output_tokens": integer count of output tokens.
-                - "input_token_details": dict with "cache_read" (int) for cached input token reads.
-                - "output_token_details": dict with "reasoning" (int) for tokens spent on reasoning.
-        """
-        # Base counts
-        self.input_tokens += usage_metadata.get("input_tokens", 0)
-        self.output_tokens += usage_metadata.get("output_tokens", 0)
-
-        # Input details (caching)
-        input_details = usage_metadata.get("input_token_details", {})
-        self.cached_tokens += input_details.get("cache_read", 0)
-
-        # Output details (reasoning)
-        output_details = usage_metadata.get("output_token_details", {})
-        self.reasoning_tokens += output_details.get("reasoning", 0)
