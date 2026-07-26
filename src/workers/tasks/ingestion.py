@@ -350,6 +350,7 @@ def ingest_data(self, args: dict):
                     else json.dumps(payload.data.json_data)
                 ),
                 observate_for=payload.observate_for,
+                context=None,
             )
 
             data_adapter.save_observations(
