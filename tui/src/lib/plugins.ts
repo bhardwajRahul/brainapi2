@@ -86,7 +86,7 @@ async function listWorkspacePlugins(): Promise<LocalPluginManifest[]> {
 }
 
 export async function searchPlugins(query: string): Promise<PluginSearchResult[]> {
-  const normalized = query.trim().toLowerCase();
+  const normalized = (query ?? "").trim().toLowerCase();
   if (!normalized) return [];
   const [localInstalled, localWorkspace, registry] = await Promise.all([
     listInstalledPlugins().catch(() => []),
@@ -96,18 +96,26 @@ export async function searchPlugins(query: string): Promise<PluginSearchResult[]
   const workspaceCandidates: PluginSearchResult[] = localWorkspace.map((plugin) => ({
     name: plugin.name,
     version: plugin.version,
-    description: plugin.description,
+    description: plugin.description ?? "",
     source: "local",
     path: plugin.path,
   }));
   const merged = [...localInstalled, ...workspaceCandidates, ...registry];
   const dedup = new Map<string, PluginSearchResult>();
   for (const candidate of merged) {
+    if (!candidate?.name) continue;
     const key = `${candidate.source}:${candidate.name}:${candidate.path ?? ""}`;
-    if (!dedup.has(key)) dedup.set(key, candidate);
+    if (!dedup.has(key)) {
+      dedup.set(key, {
+        ...candidate,
+        description: candidate.description ?? "",
+        version: candidate.version ?? "0.0.0",
+      });
+    }
   }
   return [...dedup.values()].filter((plugin) =>
-    plugin.name.toLowerCase().includes(normalized),
+    plugin.name.toLowerCase().includes(normalized) ||
+    plugin.description.toLowerCase().includes(normalized),
   );
 }
 

@@ -14,6 +14,8 @@ import {
   BEDROCK_DEFAULT_LARGE_MODEL,
   BEDROCK_DEFAULT_REGION,
   BEDROCK_DEFAULT_SMALL_MODEL,
+  DEEPSEEK_DEFAULT_LARGE_MODEL,
+  DEEPSEEK_DEFAULT_SMALL_MODEL,
   GCP_DEFAULT_EMBEDDING_MODEL,
   GCP_DEFAULT_LARGE_MODEL,
   GCP_DEFAULT_SMALL_MODEL,
@@ -31,6 +33,7 @@ import {
 import type {
   AzureChoices,
   BedrockChoices,
+  DeepSeekChoices,
   GcpChoices,
   ModelProvider,
   ModelsChoices,
@@ -72,8 +75,17 @@ async function inspectGcpCredentials(filePath: string): Promise<GcpCredentialsCh
   }
 }
 
-async function askGcp(): Promise<GcpChoices> {
-  p.log.step("Configure GCP Vertex");
+async function askGcp(opts: {
+  needLlm: boolean;
+  needEmbeddings: boolean;
+}): Promise<GcpChoices> {
+  p.log.step(
+    opts.needLlm && opts.needEmbeddings
+      ? "Configure GCP Vertex"
+      : opts.needEmbeddings
+        ? "Configure GCP Vertex embeddings"
+        : "Configure GCP Vertex LLMs",
+  );
 
   let credentialsPath = "";
   let projectIdFromFile: string | undefined;
@@ -107,87 +119,153 @@ async function askGcp(): Promise<GcpChoices> {
     projectId = entered.trim();
   }
 
-  const smallModel = await askText({
-    message: "GCP small LLM model",
-    placeholder: GCP_DEFAULT_SMALL_MODEL,
-    defaultValue: GCP_DEFAULT_SMALL_MODEL,
-  });
-  const largeModel = await askText({
-    message: "GCP large LLM model",
-    placeholder: GCP_DEFAULT_LARGE_MODEL,
-    defaultValue: GCP_DEFAULT_LARGE_MODEL,
-  });
-  const embeddingModel = await askText({
-    message: "GCP embedding model",
-    placeholder: GCP_DEFAULT_EMBEDDING_MODEL,
-    defaultValue: GCP_DEFAULT_EMBEDDING_MODEL,
-  });
+  let smallLlmModel = GCP_DEFAULT_SMALL_MODEL;
+  let largeLlmModel = GCP_DEFAULT_LARGE_MODEL;
+  if (opts.needLlm) {
+    const smallModel = await askText({
+      message: "GCP small LLM model",
+      placeholder: GCP_DEFAULT_SMALL_MODEL,
+      defaultValue: GCP_DEFAULT_SMALL_MODEL,
+    });
+    const largeModel = await askText({
+      message: "GCP large LLM model",
+      placeholder: GCP_DEFAULT_LARGE_MODEL,
+      defaultValue: GCP_DEFAULT_LARGE_MODEL,
+    });
+    smallLlmModel = smallModel.trim() || GCP_DEFAULT_SMALL_MODEL;
+    largeLlmModel = largeModel.trim() || GCP_DEFAULT_LARGE_MODEL;
+  }
+
+  let embeddingModel = GCP_DEFAULT_EMBEDDING_MODEL;
+  if (opts.needEmbeddings) {
+    const embedding = await askText({
+      message: "GCP embedding model",
+      placeholder: GCP_DEFAULT_EMBEDDING_MODEL,
+      defaultValue: GCP_DEFAULT_EMBEDDING_MODEL,
+    });
+    embeddingModel = embedding.trim() || GCP_DEFAULT_EMBEDDING_MODEL;
+  }
 
   return {
     credentialsPath,
     projectId,
-    smallLlmModel: smallModel.trim() || GCP_DEFAULT_SMALL_MODEL,
-    largeLlmModel: largeModel.trim() || GCP_DEFAULT_LARGE_MODEL,
-    embeddingModel: embeddingModel.trim() || GCP_DEFAULT_EMBEDDING_MODEL,
+    smallLlmModel,
+    largeLlmModel,
+    embeddingModel,
   };
 }
 
-async function askAzure(): Promise<AzureChoices> {
-  p.log.step("Configure Azure OpenAI");
-  const llmEndpoint = await askText({
-    message: "Azure LLM endpoint",
-    placeholder: "https://yourproject.openai.azure.com",
-    validate: (value) => (value.trim().length === 0 ? "Endpoint is required" : undefined),
-  });
-  const llmApiVersion = await askText({
-    message: "Azure LLM API version",
-    placeholder: AZURE_DEFAULT_LARGE_API_VERSION,
-    defaultValue: AZURE_DEFAULT_LARGE_API_VERSION,
-  });
-  const llmSubscriptionKey = await askPassword({
-    message: "Azure LLM subscription key",
-    validate: (value) => (value.trim().length === 0 ? "API key is required" : undefined),
-  });
-  const smallLlmModel = await askText({
-    message: "Azure small LLM deployment/model",
-    placeholder: AZURE_DEFAULT_SMALL_MODEL,
-    defaultValue: AZURE_DEFAULT_SMALL_MODEL,
-  });
-  const largeLlmModel = await askText({
-    message: "Azure large LLM deployment/model",
-    placeholder: AZURE_DEFAULT_LARGE_MODEL,
-    defaultValue: AZURE_DEFAULT_LARGE_MODEL,
-  });
-  const embeddingEndpoint = await askText({
-    message: "Azure embeddings endpoint URL",
-    placeholder:
-      "https://yourproject.openai.azure.com/openai/deployments/text-embedding-3-large/embeddings?api-version=2023-05-15",
-    validate: (value) => (value.trim().length === 0 ? "Endpoint URL is required" : undefined),
-  });
-  const embeddingKey = await askPassword({
-    message: "Azure embeddings API key",
-    validate: (value) => (value.trim().length === 0 ? "API key is required" : undefined),
-  });
-  const embeddingModel = await askText({
-    message: "Azure embedding model/deployment",
-    placeholder: AZURE_DEFAULT_EMBEDDING_MODEL,
-    defaultValue: AZURE_DEFAULT_EMBEDDING_MODEL,
-  });
+async function askAzure(opts: {
+  needLlm: boolean;
+  needEmbeddings: boolean;
+}): Promise<AzureChoices> {
+  p.log.step(
+    opts.needLlm && opts.needEmbeddings
+      ? "Configure Azure OpenAI"
+      : opts.needEmbeddings
+        ? "Configure Azure OpenAI embeddings"
+        : "Configure Azure OpenAI LLMs",
+  );
+
+  let llmEndpoint = "";
+  let llmApiVersion = AZURE_DEFAULT_LARGE_API_VERSION;
+  let llmSubscriptionKey = "";
+  let smallLlmModel = AZURE_DEFAULT_SMALL_MODEL;
+  let largeLlmModel = AZURE_DEFAULT_LARGE_MODEL;
+  if (opts.needLlm) {
+    llmEndpoint = (
+      await askText({
+        message: "Azure LLM endpoint",
+        placeholder: "https://yourproject.openai.azure.com",
+        validate: (value) =>
+          value.trim().length === 0 ? "Endpoint is required" : undefined,
+      })
+    ).trim();
+    llmApiVersion = (
+      await askText({
+        message: "Azure LLM API version",
+        placeholder: AZURE_DEFAULT_LARGE_API_VERSION,
+        defaultValue: AZURE_DEFAULT_LARGE_API_VERSION,
+      })
+    ).trim() || AZURE_DEFAULT_LARGE_API_VERSION;
+    llmSubscriptionKey = (
+      await askPassword({
+        message: "Azure LLM subscription key",
+        validate: (value) =>
+          value.trim().length === 0 ? "API key is required" : undefined,
+      })
+    ).trim();
+    smallLlmModel =
+      (
+        await askText({
+          message: "Azure small LLM deployment/model",
+          placeholder: AZURE_DEFAULT_SMALL_MODEL,
+          defaultValue: AZURE_DEFAULT_SMALL_MODEL,
+        })
+      ).trim() || AZURE_DEFAULT_SMALL_MODEL;
+    largeLlmModel =
+      (
+        await askText({
+          message: "Azure large LLM deployment/model",
+          placeholder: AZURE_DEFAULT_LARGE_MODEL,
+          defaultValue: AZURE_DEFAULT_LARGE_MODEL,
+        })
+      ).trim() || AZURE_DEFAULT_LARGE_MODEL;
+  }
+
+  let embeddingEndpoint = "";
+  let embeddingKey = "";
+  let embeddingModel = AZURE_DEFAULT_EMBEDDING_MODEL;
+  if (opts.needEmbeddings) {
+    embeddingEndpoint = (
+      await askText({
+        message: "Azure embeddings endpoint URL",
+        placeholder:
+          "https://yourproject.openai.azure.com/openai/deployments/text-embedding-3-large/embeddings?api-version=2023-05-15",
+        validate: (value) =>
+          value.trim().length === 0 ? "Endpoint URL is required" : undefined,
+      })
+    ).trim();
+    embeddingKey = (
+      await askPassword({
+        message: "Azure embeddings API key",
+        validate: (value) =>
+          value.trim().length === 0 ? "API key is required" : undefined,
+      })
+    ).trim();
+    embeddingModel =
+      (
+        await askText({
+          message: "Azure embedding model/deployment",
+          placeholder: AZURE_DEFAULT_EMBEDDING_MODEL,
+          defaultValue: AZURE_DEFAULT_EMBEDDING_MODEL,
+        })
+      ).trim() || AZURE_DEFAULT_EMBEDDING_MODEL;
+  }
 
   return {
-    smallLlmModel: smallLlmModel.trim() || AZURE_DEFAULT_SMALL_MODEL,
-    largeLlmModel: largeLlmModel.trim() || AZURE_DEFAULT_LARGE_MODEL,
-    llmApiVersion: llmApiVersion.trim() || AZURE_DEFAULT_LARGE_API_VERSION,
-    llmEndpoint: llmEndpoint.trim(),
-    llmSubscriptionKey: llmSubscriptionKey.trim(),
-    embeddingEndpoint: embeddingEndpoint.trim(),
-    embeddingKey: embeddingKey.trim(),
-    embeddingModel: embeddingModel.trim() || AZURE_DEFAULT_EMBEDDING_MODEL,
+    smallLlmModel,
+    largeLlmModel,
+    llmApiVersion,
+    llmEndpoint,
+    llmSubscriptionKey,
+    embeddingEndpoint,
+    embeddingKey,
+    embeddingModel,
   };
 }
 
-async function askBedrock(): Promise<BedrockChoices> {
-  p.log.step("Configure Amazon Bedrock");
+async function askBedrock(opts: {
+  needLlm: boolean;
+  needEmbeddings: boolean;
+}): Promise<BedrockChoices> {
+  p.log.step(
+    opts.needLlm && opts.needEmbeddings
+      ? "Configure Amazon Bedrock"
+      : opts.needEmbeddings
+        ? "Configure Amazon Bedrock embeddings"
+        : "Configure Amazon Bedrock LLMs",
+  );
   const region = await askText({
     message: "AWS region",
     placeholder: BEDROCK_DEFAULT_REGION,
@@ -207,34 +285,62 @@ async function askBedrock(): Promise<BedrockChoices> {
     message: "AWS session token (optional)",
     validate: () => undefined,
   });
-  const smallLlmModel = await askText({
-    message: "Bedrock small LLM model id",
-    placeholder: BEDROCK_DEFAULT_SMALL_MODEL,
-    defaultValue: BEDROCK_DEFAULT_SMALL_MODEL,
-  });
-  const largeLlmModel = await askText({
-    message: "Bedrock large LLM model id",
-    placeholder: BEDROCK_DEFAULT_LARGE_MODEL,
-    defaultValue: BEDROCK_DEFAULT_LARGE_MODEL,
-  });
-  const embeddingModel = await askText({
-    message: "Bedrock embedding model id",
-    placeholder: BEDROCK_DEFAULT_EMBEDDING_MODEL,
-    defaultValue: BEDROCK_DEFAULT_EMBEDDING_MODEL,
-  });
+
+  let smallLlmModel = BEDROCK_DEFAULT_SMALL_MODEL;
+  let largeLlmModel = BEDROCK_DEFAULT_LARGE_MODEL;
+  if (opts.needLlm) {
+    smallLlmModel =
+      (
+        await askText({
+          message: "Bedrock small LLM model id",
+          placeholder: BEDROCK_DEFAULT_SMALL_MODEL,
+          defaultValue: BEDROCK_DEFAULT_SMALL_MODEL,
+        })
+      ).trim() || BEDROCK_DEFAULT_SMALL_MODEL;
+    largeLlmModel =
+      (
+        await askText({
+          message: "Bedrock large LLM model id",
+          placeholder: BEDROCK_DEFAULT_LARGE_MODEL,
+          defaultValue: BEDROCK_DEFAULT_LARGE_MODEL,
+        })
+      ).trim() || BEDROCK_DEFAULT_LARGE_MODEL;
+  }
+
+  let embeddingModel = BEDROCK_DEFAULT_EMBEDDING_MODEL;
+  if (opts.needEmbeddings) {
+    embeddingModel =
+      (
+        await askText({
+          message: "Bedrock embedding model id",
+          placeholder: BEDROCK_DEFAULT_EMBEDDING_MODEL,
+          defaultValue: BEDROCK_DEFAULT_EMBEDDING_MODEL,
+        })
+      ).trim() || BEDROCK_DEFAULT_EMBEDDING_MODEL;
+  }
+
   return {
     region: region.trim() || BEDROCK_DEFAULT_REGION,
     accessKeyId: accessKeyId.trim(),
     secretAccessKey: secretAccessKey.trim(),
     sessionToken: sessionToken.trim() || undefined,
-    smallLlmModel: smallLlmModel.trim() || BEDROCK_DEFAULT_SMALL_MODEL,
-    largeLlmModel: largeLlmModel.trim() || BEDROCK_DEFAULT_LARGE_MODEL,
-    embeddingModel: embeddingModel.trim() || BEDROCK_DEFAULT_EMBEDDING_MODEL,
+    smallLlmModel,
+    largeLlmModel,
+    embeddingModel,
   };
 }
 
-async function askOpenAI(): Promise<OpenAIChoices> {
-  p.log.step("Configure OpenAI");
+async function askOpenAI(opts: {
+  needLlm: boolean;
+  needEmbeddings: boolean;
+}): Promise<OpenAIChoices> {
+  p.log.step(
+    opts.needLlm && opts.needEmbeddings
+      ? "Configure OpenAI"
+      : opts.needEmbeddings
+        ? "Configure OpenAI embeddings"
+        : "Configure OpenAI LLMs",
+  );
 
   const apiKey = await askPassword({
     message: "OpenAI API key",
@@ -246,28 +352,40 @@ async function askOpenAI(): Promise<OpenAIChoices> {
     placeholder: "https://api.openai.com/v1",
     defaultValue: "",
   });
-  const smallLlmModel = await askText({
-    message: "OpenAI small LLM model",
-    placeholder: OPENAI_DEFAULT_SMALL_MODEL,
-    defaultValue: OPENAI_DEFAULT_SMALL_MODEL,
-  });
-  const largeLlmModel = await askText({
-    message: "OpenAI large LLM model",
-    placeholder: OPENAI_DEFAULT_LARGE_MODEL,
-    defaultValue: OPENAI_DEFAULT_LARGE_MODEL,
-  });
-  const embeddingModel = await askText({
-    message: "OpenAI embedding model",
-    placeholder: OPENAI_DEFAULT_EMBEDDING_MODEL,
-    defaultValue: OPENAI_DEFAULT_EMBEDDING_MODEL,
-  });
+
+  let smallLlmModel = OPENAI_DEFAULT_SMALL_MODEL;
+  let largeLlmModel = OPENAI_DEFAULT_LARGE_MODEL;
+  if (opts.needLlm) {
+    const small = await askText({
+      message: "OpenAI small LLM model",
+      placeholder: OPENAI_DEFAULT_SMALL_MODEL,
+      defaultValue: OPENAI_DEFAULT_SMALL_MODEL,
+    });
+    const large = await askText({
+      message: "OpenAI large LLM model",
+      placeholder: OPENAI_DEFAULT_LARGE_MODEL,
+      defaultValue: OPENAI_DEFAULT_LARGE_MODEL,
+    });
+    smallLlmModel = small.trim() || OPENAI_DEFAULT_SMALL_MODEL;
+    largeLlmModel = large.trim() || OPENAI_DEFAULT_LARGE_MODEL;
+  }
+
+  let embeddingModel = OPENAI_DEFAULT_EMBEDDING_MODEL;
+  if (opts.needEmbeddings) {
+    const embedding = await askText({
+      message: "OpenAI embedding model",
+      placeholder: OPENAI_DEFAULT_EMBEDDING_MODEL,
+      defaultValue: OPENAI_DEFAULT_EMBEDDING_MODEL,
+    });
+    embeddingModel = embedding.trim() || OPENAI_DEFAULT_EMBEDDING_MODEL;
+  }
 
   return {
     apiKey: apiKey.trim(),
     baseUrl: baseUrl.trim() || undefined,
-    smallLlmModel: smallLlmModel.trim() || OPENAI_DEFAULT_SMALL_MODEL,
-    largeLlmModel: largeLlmModel.trim() || OPENAI_DEFAULT_LARGE_MODEL,
-    embeddingModel: embeddingModel.trim() || OPENAI_DEFAULT_EMBEDDING_MODEL,
+    smallLlmModel,
+    largeLlmModel,
+    embeddingModel,
   };
 }
 
@@ -295,6 +413,30 @@ async function askAnthropic(): Promise<AnthropicChoices> {
   };
 }
 
+async function askDeepSeek(): Promise<DeepSeekChoices> {
+  p.log.step("Configure DeepSeek");
+  const apiKey = await askPassword({
+    message: "DeepSeek API key",
+    validate: (value) =>
+      value.trim().length === 0 ? "API key is required" : undefined,
+  });
+  const smallLlmModel = await askText({
+    message: "DeepSeek small LLM model",
+    placeholder: DEEPSEEK_DEFAULT_SMALL_MODEL,
+    defaultValue: DEEPSEEK_DEFAULT_SMALL_MODEL,
+  });
+  const largeLlmModel = await askText({
+    message: "DeepSeek large LLM model",
+    placeholder: DEEPSEEK_DEFAULT_LARGE_MODEL,
+    defaultValue: DEEPSEEK_DEFAULT_LARGE_MODEL,
+  });
+  return {
+    apiKey: apiKey.trim(),
+    smallLlmModel: smallLlmModel.trim() || DEEPSEEK_DEFAULT_SMALL_MODEL,
+    largeLlmModel: largeLlmModel.trim() || DEEPSEEK_DEFAULT_LARGE_MODEL,
+  };
+}
+
 async function askLlmProvider(message: string, initialValue: ModelProvider): Promise<ModelProvider> {
   return pickOne<ModelProvider>({
     message,
@@ -302,6 +444,7 @@ async function askLlmProvider(message: string, initialValue: ModelProvider): Pro
       { value: "ollama", label: "Ollama" },
       { value: "openai", label: "OpenAI" },
       { value: "anthropic", label: "Anthropic" },
+      { value: "deepseek", label: "DeepSeek" },
       { value: "azure", label: "Azure OpenAI" },
       { value: "gcp_vertex", label: "Google Cloud — Vertex AI" },
       { value: "amazon_bedrock", label: "Amazon Bedrock" },
@@ -312,9 +455,9 @@ async function askLlmProvider(message: string, initialValue: ModelProvider): Pro
 
 async function askEmbeddingsProvider(
   message: string,
-  initialValue: Exclude<ModelProvider, "anthropic">,
-): Promise<Exclude<ModelProvider, "anthropic">> {
-  return pickOne<Exclude<ModelProvider, "anthropic">>({
+  initialValue: Exclude<ModelProvider, "anthropic" | "deepseek">,
+): Promise<Exclude<ModelProvider, "anthropic" | "deepseek">> {
+  return pickOne<Exclude<ModelProvider, "anthropic" | "deepseek">>({
     message,
     options: [
       { value: "ollama", label: "Ollama" },
@@ -399,25 +542,44 @@ export async function askModels(options?: {
   let azure = undefined;
   let openai = undefined;
   let anthropic = undefined;
+  let deepseek = undefined;
   let bedrock = undefined;
 
   if (providers.has("ollama")) {
     ollama = await askOllama();
   }
   if (providers.has("gcp_vertex")) {
-    gcp = await askGcp();
+    gcp = await askGcp({
+      needLlm:
+        llmSmallProvider === "gcp_vertex" || llmLargeProvider === "gcp_vertex",
+      needEmbeddings: embeddingsProvider === "gcp_vertex",
+    });
   }
   if (providers.has("azure")) {
-    azure = await askAzure();
+    azure = await askAzure({
+      needLlm: llmSmallProvider === "azure" || llmLargeProvider === "azure",
+      needEmbeddings: embeddingsProvider === "azure",
+    });
   }
   if (providers.has("openai")) {
-    openai = await askOpenAI();
+    openai = await askOpenAI({
+      needLlm: llmSmallProvider === "openai" || llmLargeProvider === "openai",
+      needEmbeddings: embeddingsProvider === "openai",
+    });
   }
   if (providers.has("anthropic")) {
     anthropic = await askAnthropic();
   }
+  if (providers.has("deepseek")) {
+    deepseek = await askDeepSeek();
+  }
   if (providers.has("amazon_bedrock")) {
-    bedrock = await askBedrock();
+    bedrock = await askBedrock({
+      needLlm:
+        llmSmallProvider === "amazon_bedrock" ||
+        llmLargeProvider === "amazon_bedrock",
+      needEmbeddings: embeddingsProvider === "amazon_bedrock",
+    });
   }
 
   return attachEmbeddingDimensions(
@@ -431,6 +593,7 @@ export async function askModels(options?: {
       azure,
       openai,
       anthropic,
+      deepseek,
       bedrock,
     },
     {

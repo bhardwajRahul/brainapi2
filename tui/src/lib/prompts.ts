@@ -111,7 +111,7 @@ export async function askText(opts: {
     p.cancel("Setup cancelled.");
     process.exit(1);
   }
-  return result as string;
+  return typeof result === "string" ? result : "";
 }
 
 export async function askPassword(opts: {

@@ -7,6 +7,7 @@ export type ModelProvider =
   | "azure"
   | "openai"
   | "anthropic"
+  | "deepseek"
   | "gcp_vertex"
   | "amazon_bedrock";
 export type OcrMode = "docparser" | "docling";
@@ -75,6 +76,12 @@ export interface AnthropicChoices {
   largeLlmModel: string;
 }
 
+export interface DeepSeekChoices {
+  apiKey: string;
+  smallLlmModel: string;
+  largeLlmModel: string;
+}
+
 export interface EmbeddingDimensions {
   nodesDimension: number;
   tripletsDimension: number;
@@ -94,6 +101,7 @@ export interface ModelsChoices {
   azure?: AzureChoices;
   openai?: OpenAIChoices;
   anthropic?: AnthropicChoices;
+  deepseek?: DeepSeekChoices;
   bedrock?: BedrockChoices;
 }
 

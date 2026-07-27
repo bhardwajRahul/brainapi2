@@ -9,6 +9,8 @@ import {
   BEDROCK_DEFAULT_LARGE_MODEL,
   BEDROCK_DEFAULT_REGION,
   BEDROCK_DEFAULT_SMALL_MODEL,
+  DEEPSEEK_DEFAULT_LARGE_MODEL,
+  DEEPSEEK_DEFAULT_SMALL_MODEL,
   EMBEDDINGS_DEFAULTS,
   OPENAI_DEFAULT_EMBEDDING_MODEL,
   OPENAI_DEFAULT_LARGE_MODEL,
@@ -35,6 +37,7 @@ const AZURE_EMBEDDING_PLACEHOLDER =
 const AZURE_KEY_PLACEHOLDER = "azure-key-placeholder";
 const OPENAI_KEY_PLACEHOLDER = "openai-api-key-placeholder";
 const ANTHROPIC_KEY_PLACEHOLDER = "anthropic-api-key-placeholder";
+const DEEPSEEK_KEY_PLACEHOLDER = "deepseek-api-key-placeholder";
 
 function resolveModelsMode(choices: InitChoices): "local" | "remote" {
   const { llmSmallProvider, llmLargeProvider, embeddingsProvider } = choices.models;
@@ -175,6 +178,7 @@ function applyRemoteModelValues(
   const azure = choices.models.azure;
   const openai = choices.models.openai;
   const anthropic = choices.models.anthropic;
+  const deepseek = choices.models.deepseek;
   const bedrock = choices.models.bedrock;
   values[ENV_KEYS.llmSmallProvider] = choices.models.llmSmallProvider;
   values[ENV_KEYS.llmLargeProvider] = choices.models.llmLargeProvider;
@@ -227,6 +231,11 @@ function applyRemoteModelValues(
     anthropic?.smallLlmModel ?? ANTHROPIC_DEFAULT_SMALL_MODEL;
   values[ENV_KEYS.anthropicLargeLlmModel] =
     anthropic?.largeLlmModel ?? ANTHROPIC_DEFAULT_LARGE_MODEL;
+  values[ENV_KEYS.deepseekApiKey] = deepseek?.apiKey ?? DEEPSEEK_KEY_PLACEHOLDER;
+  values[ENV_KEYS.deepseekSmallLlmModel] =
+    deepseek?.smallLlmModel ?? DEEPSEEK_DEFAULT_SMALL_MODEL;
+  values[ENV_KEYS.deepseekLargeLlmModel] =
+    deepseek?.largeLlmModel ?? DEEPSEEK_DEFAULT_LARGE_MODEL;
   values[ENV_KEYS.bedrockAccessKeyId] = bedrock?.accessKeyId ?? "your-access-key-id";
   values[ENV_KEYS.bedrockSecretAccessKey] =
     bedrock?.secretAccessKey ?? "your-secret-access-key";

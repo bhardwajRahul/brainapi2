@@ -28,6 +28,8 @@ export const OPENAI_DEFAULT_LARGE_MODEL = "gpt-4o";
 export const OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large";
 export const ANTHROPIC_DEFAULT_SMALL_MODEL = "claude-3-5-haiku-latest";
 export const ANTHROPIC_DEFAULT_LARGE_MODEL = "claude-sonnet-4-20250514";
+export const DEEPSEEK_DEFAULT_SMALL_MODEL = "deepseek-v4-flash";
+export const DEEPSEEK_DEFAULT_LARGE_MODEL = "deepseek-v4-pro";
 
 export const KNOWN_EMBEDDING_MODEL_DIMENSIONS: Record<string, number> = {
   "nomic-embed-text": 768,
@@ -211,6 +213,9 @@ export const ENV_KEYS = {
   anthropicApiKey: "ANTHROPIC_API_KEY",
   anthropicSmallLlmModel: "ANTHROPIC_SMALL_LLM_MODEL",
   anthropicLargeLlmModel: "ANTHROPIC_LARGE_LLM_MODEL",
+  deepseekApiKey: "DEEPSEEK_API_KEY",
+  deepseekSmallLlmModel: "DEEPSEEK_SMALL_LLM_MODEL",
+  deepseekLargeLlmModel: "DEEPSEEK_LARGE_LLM_MODEL",
 
   bedrockRegion: "BEDROCK_REGION",
   bedrockAccessKeyId: "BEDROCK_ACCESS_KEY_ID",
