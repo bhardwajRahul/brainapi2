@@ -23,6 +23,10 @@ def _build_small_llm(provider: str):
         from src.lib.llm.client_anthropic import _llm_small_client_anthropic
 
         return _llm_small_client_anthropic
+    if provider == "deepseek":
+        from src.lib.llm.client_deepseek import _llm_small_client_deepseek
+
+        return _llm_small_client_deepseek
     if provider == "gcp_vertex":
         from src.lib.llm.client_small import _llm_small_client
 
@@ -51,6 +55,10 @@ def _build_large_llm(provider: str):
         from src.lib.llm.client_anthropic import _llm_large_client_anthropic
 
         return _llm_large_client_anthropic
+    if provider == "deepseek":
+        from src.lib.llm.client_deepseek import _llm_large_client_deepseek
+
+        return _llm_large_client_deepseek
     if provider == "gcp_vertex":
         from src.lib.llm.client_vertex import _llm_large_client_vertex
 

@@ -124,7 +124,9 @@ class NetworkXGraphClient(GraphClient):
     ) -> list[Node] | str:
         self._store.ensure_database(brain_id)
         for node in nodes:
-            identification_dict: dict[str, Any] = {"name": node.name}
+            if not node.uuid:
+                raise ValueError("Node uuid is required for upsert")
+            identification_dict: dict[str, Any] = {"uuid": node.uuid, "name": node.name}
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties: dict[str, Any] = {
                 **(node.properties or {}),
@@ -133,7 +135,7 @@ class NetworkXGraphClient(GraphClient):
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)
-                    if normalized_key != "name":
+                    if normalized_key not in {"uuid", "name"}:
                         identification_dict[normalized_key] = value
             for attr in (
                 "description",
@@ -194,6 +196,8 @@ class NetworkXGraphClient(GraphClient):
             to_object.name,
             self._clean_labels([predicate.name])[0],
             rel_props,
+            subject_uuid=subject.uuid,
+            object_uuid=to_object.uuid,
         )
         return "ok"
 

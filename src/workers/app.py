@@ -67,6 +67,7 @@ TASK_QUEUES = (
     ),
     Queue("ingest_structured_data", routing_key="ingest_structured_data"),
     Queue("consolidate_graph", routing_key="consolidate_graph"),
+    Queue("finalize_ingestion", routing_key="finalize_ingestion"),
     Queue("ingest_file", routing_key="ingest_file"),
 ) + _PLUGIN_QUEUES
 
@@ -80,6 +81,9 @@ TASK_ROUTES = {
     },
     "src.workers.tasks.ingestion.consolidate_graph_async": {
         "queue": "consolidate_graph"
+    },
+    "src.workers.tasks.ingestion.finalize_ingestion_task": {
+        "queue": "finalize_ingestion"
     },
     "src.workers.tasks.ingestion.ingest_file": {"queue": "ingest_file"},
     **_PLUGIN_ROUTES,

@@ -224,27 +224,21 @@ class Neo4jClient(GraphClient):
         self.ensure_database(brain_id)
 
         for node in nodes:
-            identification_dict = {"name": node.name}
+            if not node.uuid:
+                raise ValueError("Node uuid is required for upsert")
 
             merged_metadata = {**(metadata or {}), **(node.metadata or {})}
             all_properties = {
                 **(node.properties or {}),
                 "metadata": merged_metadata or None,
+                "name": node.name,
             }
 
             if identification_params:
                 for key, value in identification_params.items():
                     normalized_key = self._clean_property_key(key)
-                    if normalized_key != "name":
-                        identification_dict[normalized_key] = value
-
-            identification_items = []
-            for key, value in identification_dict.items():
-                cypher_key = self._format_property_key(key)
-                escaped_value = self._format_value(value)
-                identification_items.append(f"{cypher_key}: {escaped_value}")
-
-            identification_set_str = f"{{{', '.join(identification_items)}}}"
+                    if normalized_key not in {"uuid", "name"}:
+                        all_properties[normalized_key] = value
 
             attributes = [
                 "description",
@@ -267,13 +261,11 @@ class Neo4jClient(GraphClient):
                 escaped_value = self._format_value(value)
                 property_assignments.append(f"n.{cypher_key} = {escaped_value}")
 
-            property_assignments.append(f"n['uuid'] = '{node.uuid}'")
-
             properties_set = f"{', '.join(property_assignments)}"
 
             labels_expression = ":".join(self._clean_labels(node.labels))
             cypher_query = f"""
-    MERGE (n:{labels_expression} {identification_set_str})
+    MERGE (n:{labels_expression} {{uuid: {self._format_value(node.uuid)}}})
     SET {properties_set}
     RETURN n
             """
@@ -328,6 +320,9 @@ class Neo4jClient(GraphClient):
             "amount",
         ]
 
+        if not subject.uuid or not to_object.uuid or not predicate.uuid:
+            raise ValueError("Subject, object, and predicate uuids are required for upsert")
+
         extra_ops = ""
         for obj in objects:
             for attr in attributes:
@@ -337,17 +332,16 @@ class Neo4jClient(GraphClient):
             SET r['{attr}'] = {self._format_value(value)}
             """
 
+        rel_type = ":".join(self._clean_labels([predicate.name]))
         cypher_query = f"""
-        MATCH (a:{":".join(self._clean_labels(subject.labels))}) WHERE a['name'] = {self._format_value(subject.name)}
-        MATCH (b:{":".join(self._clean_labels(to_object.labels))}) WHERE b['name'] = {self._format_value(to_object.name)}
-        MERGE (a)-[r:{":".join(self._clean_labels([predicate.name]))}]->(b)
-        ON CREATE 
-        SET r['description'] = {self._format_value(predicate.description)}, 
-        r['uuid'] = {self._format_value(predicate.uuid)}, 
-        r['v_id'] = {self._format_value(predicate.properties.get("v_id"))},
-        r['flow_key'] = {self._format_value(predicate.flow_key)}
+        MATCH (a) WHERE a['uuid'] = {self._format_value(subject.uuid)}
+        MATCH (b) WHERE b['uuid'] = {self._format_value(to_object.uuid)}
+        MERGE (a)-[r:{rel_type} {{uuid: {self._format_value(predicate.uuid)}}}]->(b)
+        SET r['description'] = {self._format_value(predicate.description)},
+            r['v_id'] = {self._format_value((predicate.properties or {}).get("v_id"))},
+            r['flow_key'] = {self._format_value(predicate.flow_key)}
         {extra_ops}
-        RETURN a, b
+        RETURN a, b, r
         """
 
         self.ensure_database(brain_id)

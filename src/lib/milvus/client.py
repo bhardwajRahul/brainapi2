@@ -235,6 +235,7 @@ class MilvusClient(VectorStoreClient):
         results = []
         for query_results in _results:
             for result in query_results:
+                raw_score = float(result.get("distance", 0.0))
                 results.append(
                     Vector(
                         id=str(result["id"]),
@@ -243,10 +244,14 @@ class MilvusClient(VectorStoreClient):
                             for k, v in result.get("entity").items()
                             if k not in ["id", "embeddings", "distance"]
                         },
-                        distance=result["distance"],
+                        distance=1.0 - raw_score,
                     )
                 )
-        results.sort(key=lambda x: x.distance)
+        results.sort(
+            key=lambda x: (
+                float("inf") if x.distance is None else float(x.distance)
+            )
+        )
         return results
 
     def get_by_ids(self, ids: list[str], store: str, brain_id: str) -> list[Vector]:
@@ -339,7 +344,9 @@ class MilvusClient(VectorStoreClient):
                     r_entity = r.get("entity", {})
                     if r_entity.get("uuid") == origin_uuid:
                         continue
-                    sim = 1.0 - float(r.get("distance", 0.0))
+                    raw_score = float(r.get("distance", 0.0))
+                    distance = 1.0 - raw_score
+                    sim = 1.0 - distance
                     if sim >= min_similarity:
                         collected.append(
                             Vector(
@@ -349,7 +356,7 @@ class MilvusClient(VectorStoreClient):
                                     for k, v in r.get("entity", {}).items()
                                     if k not in ["id", "embeddings", "distance"]
                                 },
-                                distance=r["distance"],
+                                distance=distance,
                             )
                         )
                         if len(collected) >= limit:

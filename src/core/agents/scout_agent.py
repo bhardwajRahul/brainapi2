@@ -51,6 +51,10 @@ class _ScoutEntity(BaseModel):
     name: str
     properties: Optional[dict] = Field(default_factory=dict)
     description: Optional[str] = None
+    happened_at: Optional[str] = Field(
+        default=None,
+        description="The date and time the entity happened at if known otherwise None.",
+    )
     polarity: Optional[Literal["positive", "negative", "neutral"]] = Field(
         default="neutral",
         description="The polarity of the entity.",

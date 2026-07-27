@@ -31,6 +31,7 @@ from src.workers.tasks.ingestion import ingest_file as ingest_file_task
 from src.workers.tasks.ingestion import (
     ingest_structured_data as ingest_structured_data_task,
 )
+from src.workers.tasks.ingestion import set_ingestion_task_status
 
 MAX_TASK_RETRIES = 3
 RETRY_DELAY_BASE = 0.1
@@ -38,78 +39,83 @@ RETRY_DELAY_BASE = 0.1
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
-@ingest_router.post(path="/")
+@ingest_router.post(path="/", status_code=202)
 async def ingest_data(
     data: IngestionRequestBody,
     request: Request,
     brain_id: str = Depends(get_brain_id),
 ):
     """
-    Ingest data to the processing pipeline and save to the memory.
+    Accept data for asynchronous ingestion.
     """
     data.brain_id = brain_id
     print("[Ingest] received task for brain: ", brain_id)
 
-    flow_task_identifier = None
+    flow_task_identifier = request.headers.get("Task-Identifier")
+    task_id = flow_task_identifier or str(uuid4())
 
-    if request.headers.get("Task-Identifier"):
-        flow_task_identifier = request.headers.get("Task-Identifier")
+    set_ingestion_task_status(task_id, data.brain_id, "queued", stage="queued")
 
-    task = None
     for attempt in range(MAX_TASK_RETRIES):
         try:
-            kwargs = {"args": [data.model_dump()]}
-            if flow_task_identifier:
-                kwargs["task_id"] = flow_task_identifier
-
-            task = ingest_data_task.apply_async(**kwargs)
+            ingest_data_task.apply_async(
+                args=[data.model_dump()],
+                task_id=task_id,
+            )
             break
         except OperationalError:
             if attempt == MAX_TASK_RETRIES - 1:
+                set_ingestion_task_status(
+                    task_id,
+                    data.brain_id,
+                    "failed",
+                    stage="queue",
+                    error="Task queue unavailable",
+                )
                 raise HTTPException(status_code=503, detail="Task queue unavailable")
             await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
 
-    cache_adapter.set(
-        key=f"task:{task.id}",
-        value=json.dumps({"status": "queued", "task_id": task.id}),
-        brain_id=data.brain_id,
-        expires_in=3600 * 24 * 7,
-    )
-
     return JSONResponse(
-        content={"message": "Data ingested successfully", "task_id": task.id}
+        status_code=202,
+        content={"message": "Ingestion accepted", "task_id": task_id},
     )
 
 
-@ingest_router.post(path="/structured")
+@ingest_router.post(path="/structured", status_code=202)
 async def ingest_structured_data(
     data: IngestionStructuredRequestBody,
     brain_id: str = Depends(get_brain_id),
 ):
     """
-    Ingest structured data to the processing pipeline and save to the memory.
+    Accept structured data for asynchronous ingestion.
     """
     data.brain_id = brain_id
     print("[IngestStructured] received task for brain: ", brain_id)
-    task = None
+    task_id = str(uuid4())
+    set_ingestion_task_status(task_id, data.brain_id, "queued", stage="queued")
+
     for attempt in range(MAX_TASK_RETRIES):
         try:
-            task = ingest_structured_data_task.delay(data.model_dump())
+            ingest_structured_data_task.apply_async(
+                args=[data.model_dump()],
+                task_id=task_id,
+            )
             break
         except OperationalError:
             if attempt == MAX_TASK_RETRIES - 1:
+                set_ingestion_task_status(
+                    task_id,
+                    data.brain_id,
+                    "failed",
+                    stage="queue",
+                    error="Task queue unavailable",
+                )
                 raise HTTPException(status_code=503, detail="Task queue unavailable")
             await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
 
-    cache_adapter.set(
-        key=f"task:{task.id}",
-        value=json.dumps({"status": "queued", "task_id": task.id}),
-        brain_id=data.brain_id,
-        expires_in=3600 * 24 * 7,
-    )
-
     return JSONResponse(
-        content={"message": "Structured data ingested successfully", "task_id": task.id}
+        status_code=202,
+        content={"message": "Structured ingestion accepted", "task_id": task_id},
     )
 
 
@@ -132,6 +138,7 @@ async def ingest_file(
         if config.ocr_mode == "docling":
             content_b64 = base64.b64encode(file.file.read()).decode("ascii")
             filename = file.filename or "file"
+            set_ingestion_task_status(task, brain_id, "queued", stage="queued")
             for attempt in range(MAX_TASK_RETRIES):
                 try:
                     ingest_file_task.apply_async(
@@ -145,14 +152,8 @@ async def ingest_file(
                             status_code=503, detail="Task queue unavailable"
                         )
                     await asyncio.sleep(RETRY_DELAY_BASE * (attempt + 1))
-            cache_adapter.set(
-                key=f"task:{task}",
-                value=json.dumps({"status": "queued", "task_id": task}),
-                brain_id=brain_id,
-                expires_in=3600 * 24 * 7,
-            )
             response_content = {
-                "message": "File ingested successfully",
+                "message": "File ingestion accepted",
                 "task_id": task,
             }
         else:
@@ -166,12 +167,7 @@ async def ingest_file(
             )
             app_host = f"{forwarded_proto}://{forwarded_host}".rstrip("/")
             print(f"app_host: {app_host}")
-            cache_adapter.set(
-                key=f"task:{task}",
-                value=json.dumps({"status": "queued", "task_id": task}),
-                brain_id=brain_id,
-                expires_in=3600 * 24 * 7,
-            )
+            set_ingestion_task_status(task, brain_id, "queued", stage="queued")
             response = requests.post(
                 f"{config.docparser_endpoint}/ingest",
                 files={"file": (file.filename or "file", file.file, file.content_type)},
@@ -185,7 +181,7 @@ async def ingest_file(
             if response.status_code != 200:
                 raise HTTPException(status_code=500, detail=response.text)
             response_content = {
-                "message": "File ingested successfully",
+                "message": "File ingestion accepted",
                 "task_id": task,
             }
     except HTTPException:
@@ -193,4 +189,4 @@ async def ingest_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return JSONResponse(content=response_content)
+    return JSONResponse(status_code=202, content=response_content)

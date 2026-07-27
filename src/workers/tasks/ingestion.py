@@ -26,6 +26,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple, TypedDict
 from uuid import uuid4
 
+from src.core.saving.identity import (
+    stable_node_id,
+    stable_relationship_id,
+)
+
 from pydantic import BaseModel
 
 from src.config import config
@@ -77,17 +82,104 @@ with open(PYPROJECT_PATH, "rb") as f:
 
 NODE_RESOLUTION_SIMILARITY = 0.9
 EVENT_RESOLUTION_NAME_SIMILARITY = 0.7
+RELATIONSHIP_DEDUP_MAX_DISTANCE = 0.1
+
+TASK_STATUS_RANK = {
+    "queued": 0,
+    "started": 1,
+    "persisting": 2,
+    "consolidating": 3,
+    "completed": 4,
+    "partial_failed": 4,
+    "failed": 4,
+}
+TERMINAL_TASK_STATUSES = {"completed", "failed", "partial_failed"}
 
 
-def _entity_key(entity) -> Tuple[str, str]:
+def set_ingestion_task_status(
+    task_id: str,
+    brain_id: str,
+    status: str,
+    *,
+    stage: Optional[str] = None,
+    error: Optional[str] = None,
+    errors: Optional[list] = None,
+    counts: Optional[dict] = None,
+) -> dict:
+    key = f"task:{task_id}"
+    existing_raw = cache_adapter.get(key, brain_id=brain_id)
+    existing: dict = {}
+    if existing_raw:
+        try:
+            if isinstance(existing_raw, bytes):
+                existing_raw = existing_raw.decode("utf-8")
+            existing = json.loads(existing_raw) if isinstance(existing_raw, str) else dict(existing_raw)
+        except Exception:
+            existing = {}
+    previous = existing.get("status")
+    if previous in TERMINAL_TASK_STATUSES and status not in TERMINAL_TASK_STATUSES:
+        return existing
+    if previous and TASK_STATUS_RANK.get(status, -1) < TASK_STATUS_RANK.get(previous, -1):
+        return existing
+    payload = {
+        **existing,
+        "status": status,
+        "task_id": task_id,
+    }
+    if stage is not None:
+        payload["stage"] = stage
+    if counts is not None:
+        payload["counts"] = counts
+    if error is not None:
+        payload["error"] = str(error)[:2000]
+    if errors is not None:
+        payload["errors"] = [
+            {
+                "message": str(item.get("message", item))[:500],
+                **(
+                    {"relationship": item.get("relationship")}
+                    if isinstance(item, dict) and item.get("relationship")
+                    else {}
+                ),
+            }
+            for item in errors[:50]
+        ]
+    cache_adapter.set(
+        key=key,
+        value=json.dumps(payload),
+        brain_id=brain_id,
+        expires_in=3600 * 24 * 7,
+    )
+    return payload
+
+
+def nearest_existing_vector(candidates, exclude_id) -> Optional[object]:
+    for candidate in candidates or []:
+        if exclude_id is not None and str(candidate.id) == str(exclude_id):
+            continue
+        return candidate
+    return None
+
+
+def should_dedup_relationship(candidate, max_distance: float = RELATIONSHIP_DEDUP_MAX_DISTANCE) -> bool:
     return (
+        candidate is not None
+        and candidate.distance is not None
+        and float(candidate.distance) < max_distance
+    )
+
+
+def _entity_key(entity) -> Tuple[str, str, str]:
+    entity_uuid = (getattr(entity, "uuid", None) or "").strip()
+    return (
+        entity_uuid,
         (entity.name or "").strip().lower(),
         (entity.type or "").strip().lower(),
     )
 
 
 def _is_same_graph_node(graph_node: Node, entity) -> bool:
-    if graph_node.uuid and graph_node.uuid == entity.uuid:
+    if graph_node.uuid and graph_node.uuid == getattr(entity, "uuid", None):
         return True
     same_name = (graph_node.name or "").strip().lower() == (
         entity.name or ""
@@ -115,6 +207,16 @@ def _resolve_relationship_entities(
         for entity in (relationship.tail, relationship.tip):
             unique_entities.setdefault(_entity_key(entity), entity)
 
+    pre_stable_rel_ids = {
+        id(relationship): stable_relationship_id(
+            relationship.tail.uuid,
+            relationship.name,
+            relationship.tip.uuid,
+            relationship.flow_key,
+        )
+        for relationship in relationships
+    }
+
     embeddings_cache: dict = {}
 
     def _name_embedding(name: str):
@@ -126,6 +228,15 @@ def _resolve_relationship_entities(
             except Exception:
                 embeddings_cache[key] = None
         return embeddings_cache[key]
+
+    def _uuid_match(entity) -> Optional[Node]:
+        entity_uuid = (getattr(entity, "uuid", None) or "").strip()
+        if not entity_uuid:
+            return None
+        try:
+            return graph_adapter.get_by_uuid(entity_uuid, brain_id=brain_id)
+        except Exception:
+            return None
 
     def _exact_match(entity) -> Optional[Node]:
         try:
@@ -148,6 +259,7 @@ def _resolve_relationship_entities(
         except Exception:
             return None
         entity_type = (entity.type or "").strip().lower()
+        best = None
         for candidate in candidates:
             metadata = candidate.metadata or {}
             candidate_uuid = metadata.get("uuid")
@@ -164,14 +276,22 @@ def _resolve_relationship_entities(
             similarity = cosine_similarity(embedding, candidate_vectors[0].embeddings)
             if similarity < NODE_RESOLUTION_SIMILARITY:
                 continue
+            if best is not None and similarity < best[0]:
+                continue
+            if best is not None and abs(similarity - best[0]) < 0.02:
+                return None
             node = graph_adapter.get_by_uuid(candidate_uuid, brain_id=brain_id)
             if node:
-                return node
-        return None
+                best = (similarity, node)
+        return best[1] if best else None
 
     resolutions: dict = {}
     for key, entity in unique_entities.items():
-        if key[1] == "event":
+        uuid_hit = _uuid_match(entity)
+        if uuid_hit:
+            resolutions[key] = uuid_hit
+            continue
+        if key[2] == "event":
             continue
         node = _exact_match(entity) or _vector_match(entity)
         if node:
@@ -184,12 +304,18 @@ def _resolve_relationship_entities(
                 if node:
                     entity.uuid = node.uuid
                     entity.name = node.name
+                    if getattr(node, "happened_at", None) and not entity.happened_at:
+                        entity.happened_at = node.happened_at
 
     _apply_resolutions()
     resolved_uuids = {node.uuid for node in resolutions.values()}
 
     for key, event in unique_entities.items():
-        if key[1] != "event" or key in resolutions:
+        if key[2] != "event" or key in resolutions:
+            continue
+        uuid_hit = _uuid_match(event)
+        if uuid_hit:
+            resolutions[key] = uuid_hit
             continue
         anchor_uuids = set()
         for relationship in relationships:
@@ -245,6 +371,9 @@ def _resolve_relationship_entities(
             similarity = cosine_similarity(event_embedding, candidate_embedding)
             if similarity < EVENT_RESOLUTION_NAME_SIMILARITY:
                 continue
+            if best is not None and abs(similarity - best[0]) < 0.02:
+                best = None
+                break
             if best is None or similarity > best[0]:
                 best = (similarity, candidate)
         if best:
@@ -252,6 +381,26 @@ def _resolve_relationship_entities(
 
     _apply_resolutions()
 
+    for relationship in relationships:
+        for entity in (relationship.tail, relationship.tip):
+            if resolutions.get(_entity_key(entity)):
+                continue
+            entity.uuid = stable_node_id(
+                entity.name,
+                entity.type,
+                getattr(entity, "happened_at", None),
+                getattr(entity, "uuid", None),
+            )
+        current_uuid = getattr(relationship, "uuid", None)
+        pre_stable = pre_stable_rel_ids.get(id(relationship))
+        if current_uuid and pre_stable and current_uuid != pre_stable:
+            continue
+        relationship.uuid = stable_relationship_id(
+            relationship.tail.uuid,
+            relationship.name,
+            relationship.tip.uuid,
+            relationship.flow_key,
+        )
 
 def format_textual_data(data: dict, include_keys: bool = True) -> str:
     def format_value(v):
@@ -264,6 +413,12 @@ def format_textual_data(data: dict, include_keys: bool = True) -> str:
     if include_keys:
         return "\n".join(f"{k}: {format_value(v)}" for k, v in data.items())
     return "\n".join(format_value(v) for v in data.values())
+
+
+def source_text_from_payload(payload: IngestionTaskArgs) -> str:
+    if payload.data.data_type == IngestionTaskDataType.TEXT.value:
+        return payload.data.text_data
+    return json.dumps(payload.data.json_data)
 
 
 @ingestion_app.task(bind=True)
@@ -281,12 +436,15 @@ def ingest_data(self, args: dict):
     payload = None
     try:
         payload = IngestionTaskArgs(**args)
+        from src.config import validate_pipeline_mode
 
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps({"status": "started", "task_id": self.request.id}),
-            brain_id=payload.brain_id,
-            expires_in=3600 * 24 * 7,
+        validate_pipeline_mode(config.pipeline_mode)
+
+        set_ingestion_task_status(
+            self.request.id,
+            payload.brain_id,
+            "started",
+            stage="source",
         )
 
         payload.meta_keys = (
@@ -309,16 +467,11 @@ def ingest_data(self, args: dict):
             else None
         )
 
-        # ================================================
-        # --------------- Data Saving --------------------
-        # ================================================
+        source_text = source_text_from_payload(payload)
+
         text_chunk = data_adapter.save_text_chunk(
             TextChunk(
-                text=(
-                    payload.data.text_data
-                    if payload.data.data_type == IngestionTaskDataType.TEXT.value
-                    else json.dumps(payload.data.json_data)
-                ),
+                text=source_text,
                 metadata=payload.meta_keys,
                 brain_version=BRAIN_VERSION,
             ),
@@ -340,16 +493,10 @@ def ingest_data(self, args: dict):
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
 
         if config.pipeline_mode == "accurate":
-            # ================================================
-            # --------------- Observations -------------------
-            # ================================================
             observations = observations_agent.observe(
-                text=(
-                    payload.data.text_data
-                    if payload.data.data_type == IngestionTaskDataType.TEXT.value
-                    else json.dumps(payload.data.json_data)
-                ),
+                text=source_text,
                 observate_for=payload.observate_for,
+                context=None,
             )
 
             data_adapter.save_observations(
@@ -360,40 +507,92 @@ def ingest_data(self, args: dict):
                         resource_id=text_chunk.id,
                     )
                     for observation in observations
-                ]
+                ],
+                brain_id=payload.brain_id,
             )
 
-        # ================================================
-        # ------------ Triplet Extraction ----------------
-        # ================================================
-        enrich_kg_from_input(payload.data.text_data, brain_id=payload.brain_id)
-
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps({"status": "completed", "task_id": self.request.id}),
-            brain_id=payload.brain_id,
-            expires_in=3600 * 24 * 7,
+        enrich_result = enrich_kg_from_input(source_text, brain_id=payload.brain_id)
+        parent_task_id = self.request.id
+        steps = []
+        if enrich_result.enrichment_relationships:
+            set_ingestion_task_status(
+                parent_task_id,
+                payload.brain_id,
+                "persisting",
+                stage="persisting",
+                counts={
+                    "relationships": len(enrich_result.enrichment_relationships),
+                },
+            )
+            steps.append(
+                process_architect_relationships.si(
+                    {
+                        "relationships": enrich_result.enrichment_relationships,
+                        "brain_id": enrich_result.brain_id,
+                        "session_id": enrich_result.session_id,
+                        "parent_task_id": parent_task_id,
+                    }
+                )
+            )
+        if enrich_result.should_consolidate:
+            set_ingestion_task_status(
+                parent_task_id,
+                payload.brain_id,
+                "consolidating",
+                stage="consolidating",
+            )
+            steps.append(
+                consolidate_graph_async.si(
+                    enrich_result.session_id,
+                    enrich_result.brain_id,
+                    enrich_result.ingestion_session_id,
+                    enrich_result.enrichment_relationships,
+                )
+            )
+        steps.append(
+            finalize_ingestion_task.si(
+                parent_task_id,
+                payload.brain_id,
+                "completed",
+            )
         )
+        from celery import chain
 
-        return self.request.id
+        chain(*steps).apply_async()
+        return parent_task_id
 
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
-        error_result = {
-            "status": "failed",
-            "task_id": self.request.id,
-            "error": str(e),
-            "payload": payload.model_dump(mode="json") if payload else args,
-        }
-
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps(error_result),
-            brain_id=brain_id,
-            expires_in=3600 * 24 * 7,
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "failed",
+            stage="failed",
+            error=str(e),
         )
-
         raise
+
+
+@ingestion_app.task(bind=True)
+def finalize_ingestion_task(
+    self,
+    parent_task_id: str,
+    brain_id: str = "default",
+    status: str = "completed",
+    error: Optional[str] = None,
+    errors: Optional[list] = None,
+    counts: Optional[dict] = None,
+):
+    set_ingestion_task_status(
+        parent_task_id,
+        brain_id,
+        status,
+        stage=status,
+        error=error,
+        errors=errors,
+        counts=counts,
+    )
+    return parent_task_id
 
 
 @ingestion_app.task(bind=True)
@@ -425,19 +624,16 @@ def process_architect_relationships(self, args: dict):
     relationships_data: List[dict] = args.get("relationships", [])
     brain_id: str = args.get("brain_id", "default")
     session_id: Optional[str] = args.get("session_id")
+    parent_task_id: Optional[str] = args.get("parent_task_id")
+    status_task_id = parent_task_id or self.request.id
 
     try:
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps(
-                {
-                    "status": "started",
-                    "task_id": self.request.id,
-                    "total_relationships": len(relationships_data),
-                }
-            ),
-            brain_id=brain_id,
-            expires_in=3600 * 24 * 7,
+        set_ingestion_task_status(
+            status_task_id,
+            brain_id,
+            "persisting",
+            stage="persisting",
+            counts={"relationships": len(relationships_data)},
         )
 
         ingestion_manager = IngestionManager(
@@ -450,12 +646,19 @@ def process_architect_relationships(self, args: dict):
         _normalize_relationship_dates(relationships)
         _resolve_relationship_entities(relationships, brain_id)
 
+        item_errors: List[dict] = []
         with ThreadPoolExecutor(max_workers=10) as io_executor:
             rel_embedding_futures: List[Tuple[Future, ArchitectAgentRelationship]] = []
             for relationship in relationships:
                 if not isinstance(relationship, ArchitectAgentRelationship):
                     print(
                         f"[!] Skipping invalid relationship type: {type(relationship)}"
+                    )
+                    item_errors.append(
+                        {
+                            "relationship": str(type(relationship)),
+                            "message": "invalid relationship type",
+                        }
                     )
                     continue
                 if relationship.tail.uuid == relationship.tip.uuid:
@@ -501,9 +704,12 @@ def process_architect_relationships(self, args: dict):
                                 store="relationships",
                                 k=10,
                             )
-                    if similar_v_rels and similar_v_rels[0].distance > 0.9:
+                    nearest_existing = nearest_existing_vector(
+                        similar_v_rels, v_rel_id
+                    )
+                    if should_dedup_relationship(nearest_existing):
                         similar_rel = graph_adapter.get_triples_by_uuid(
-                            [similar_v_rels[0].metadata.get("uuid")],
+                            [nearest_existing.metadata.get("uuid")],
                             brain_id=brain_id,
                         )
                         if similar_rel:
@@ -640,23 +846,38 @@ def process_architect_relationships(self, args: dict):
                     )
                 except FutureTimeoutError:
                     rel_name = getattr(relationship, "name", "unknown")
-                    print(
-                        f"[!] Relationship embedding future timed out for {rel_name}, skipping"
+                    item_errors.append(
+                        {
+                            "relationship": rel_name,
+                            "message": "relationship embedding timed out",
+                        }
                     )
-                    continue
                 except Exception as e:
                     rel_name = getattr(relationship, "name", "unknown")
-                    print(
-                        f"[!] Relationship embedding future failed for {rel_name}: {e}"
+                    item_errors.append(
+                        {"relationship": rel_name, "message": str(e)}
                     )
-                    continue
 
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps({"status": "completed", "task_id": self.request.id}),
-            brain_id=brain_id,
-            expires_in=3600 * 24 * 7,
-        )
+        if item_errors:
+            status = (
+                "partial_failed"
+                if len(item_errors) < len(relationships_data)
+                else "failed"
+            )
+            set_ingestion_task_status(
+                status_task_id,
+                brain_id,
+                status,
+                stage="persisting",
+                errors=item_errors,
+                counts={
+                    "relationships": len(relationships_data),
+                    "failed": len(item_errors),
+                },
+            )
+            raise RuntimeError(
+                f"{len(item_errors)} relationship persistence failures"
+            )
 
         if session_id:
             from src.lib.redis.client import _redis_client
@@ -671,25 +892,28 @@ def process_architect_relationships(self, args: dict):
         return self.request.id
 
     except Exception as e:
-        error_result = {
-            "status": "failed",
-            "task_id": self.request.id,
-            "error": str(e),
-            "args": args,
-        }
-
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps(error_result),
-            brain_id=brain_id,
-            expires_in=3600 * 24 * 7,
-        )
-
+        current = cache_adapter.get(f"task:{status_task_id}", brain_id=brain_id)
+        current_status = None
+        if current:
+            try:
+                parsed = json.loads(
+                    current.decode("utf-8") if isinstance(current, bytes) else current
+                )
+                current_status = parsed.get("status")
+            except Exception:
+                current_status = None
+        if current_status not in TERMINAL_TASK_STATUSES:
+            set_ingestion_task_status(
+                status_task_id,
+                brain_id,
+                "failed",
+                stage="persisting",
+                error=str(e),
+            )
         if session_id:
             from src.lib.redis.client import _redis_client
 
             _redis_client.client.decr(f"{brain_id}:session:{session_id}:pending_tasks")
-
         raise
 
 
@@ -714,17 +938,12 @@ def ingest_structured_data(self, args: dict):
     try:
         payload = IngestionStructuredRequestBody(**args)
 
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps(
-                {
-                    "status": "started",
-                    "task_id": self.request.id,
-                    "total_elements": len(payload.data),
-                }
-            ),
-            brain_id=payload.brain_id,
-            expires_in=3600 * 24 * 7,
+        set_ingestion_task_status(
+            self.request.id,
+            payload.brain_id,
+            "started",
+            stage="source",
+            counts={"triples": len(payload.data)},
         )
 
         anchor = None
@@ -732,30 +951,29 @@ def ingest_structured_data(self, args: dict):
             embeddings_adapter, vector_store_adapter, graph_adapter
         )
 
-        if isinstance(payload.anchor, PartialNodeFilter) and payload.anchor.uuid:
+        if payload.anchor is None:
+            pass
+        elif payload.anchor.uuid:
             anchor = graph_adapter.get_by_uuid(
                 payload.anchor.uuid, brain_id=payload.brain_id
             )
             if not anchor:
-                cache_adapter.set(
-                    key=f"task:{self.request.id}",
-                    value=json.dumps(
-                        {
-                            "status": "failed",
-                            "task_id": self.request.id,
-                            "error": f"Anchor node with uuid {payload.anchor.uuid} not found",
-                        }
-                    ),
-                    brain_id=payload.brain_id,
-                    expires_in=3600 * 24 * 7,
+                error = f"Anchor node with uuid {payload.anchor.uuid} not found"
+                set_ingestion_task_status(
+                    self.request.id,
+                    payload.brain_id,
+                    "failed",
+                    stage="anchor",
+                    error=error,
                 )
-                return
-
+                raise ValueError(error)
         else:
             anchor = graph_adapter.get_by_identification_params(
                 IdentificationParams(
                     name=payload.anchor.name, entity_types=[payload.anchor.type]
-                )
+                ),
+                brain_id=payload.brain_id,
+                entity_types=[payload.anchor.type] if payload.anchor.type else None,
             )
             if not anchor:
                 txt = (
@@ -789,7 +1007,7 @@ def ingest_structured_data(self, args: dict):
                 )
                 if kg_agent_anchor_result.exists:
                     anchor = kg_agent_anchor_result.node
-                elif payload.anchor:
+                else:
                     anchor_entity = ScoutEntity(
                         name=payload.anchor.name,
                         type=payload.anchor.type,
@@ -812,15 +1030,44 @@ def ingest_structured_data(self, args: dict):
                     )
                     anchor = added_nodes[0]
 
-        if payload.text:
-            current_triples: List[IngestionTripleSet] = []
-            partial_triples: List[IngestionTripleSet] = []
-            for triple in payload.data:
-                if triple.subject and triple.subj_event:
-                    current_triples.append(triple)
-                else:
-                    partial_triples.append(triple)
+        data_adapter.save_structured_data(
+            StructuredData(
+                id=self.request.id,
+                data={
+                    "triples": [t.model_dump(mode="json") for t in payload.data],
+                    "text": payload.text,
+                    "anchor": (
+                        payload.anchor.model_dump(mode="json")
+                        if payload.anchor
+                        else None
+                    ),
+                },
+                types=["ingestion_structured"],
+                metadata={"task_id": self.request.id},
+                brain_version=BRAIN_VERSION,
+            ),
+            brain_id=payload.brain_id,
+        )
 
+        current_triples: List[IngestionTripleSet] = []
+        partial_triples: List[IngestionTripleSet] = []
+        for triple in payload.data:
+            if triple.subject and triple.subj_event:
+                current_triples.append(triple)
+            else:
+                partial_triples.append(triple)
+
+        from src.core.agents.architect_agent import ingestion_triples_to_relationships
+
+        required_relationships, _ = ingestion_triples_to_relationships(
+            current_triples, partial_triples
+        )
+        persistence_batches = [
+            rel.model_dump(mode="json") for rel in required_relationships
+        ]
+        session_id = None
+
+        if payload.text:
             scout_agent = ScoutAgent(
                 llm_adapter=llm_small_adapter,
                 cache_adapter=cache_adapter,
@@ -837,7 +1084,7 @@ def ingest_structured_data(self, args: dict):
                 ingestion_manager=ingestion_manager,
             )
             scout_agent_response = scout_agent.run_structured(
-                text=payload.text if payload.text else None,
+                text=payload.text,
                 brain_id=payload.brain_id,
                 timeout=180,
                 max_retries=3,
@@ -846,7 +1093,7 @@ def ingest_structured_data(self, args: dict):
                 current_triples=current_triples,
             )
             architect_agent.run_structured(
-                text=payload.text if payload.text else None,
+                text=payload.text,
                 entities=scout_agent_response.entities,
                 targeting=anchor,
                 brain_id=payload.brain_id,
@@ -855,39 +1102,55 @@ def ingest_structured_data(self, args: dict):
                 ingestion_session_id=self.request.id,
                 partial_triples=partial_triples,
                 current_triples=current_triples,
+                persist_submitted=False,
+            )
+            enrichment = architect_agent.take_pending_relationships()
+            session_id = architect_agent.session_id
+            persistence_batches.extend(
+                rel.model_dump(mode="json") for rel in enrichment
             )
 
-        # TODO [SIR]: Add the triples to the knowledge graph + save the data + create the embeddings and save them -- save the text if present and find a way to save the rels (maybe isn't necessary?)
-
-        # TODO [SIR]: Create the observations ??
-        # NOTE [SIR]: structured is by definition ment to save precise information so the pipeline will only be granular/accurate
-        # NOTE [SIR]: for the text ingestion the lightweight can be converted into ingestion of only observations instead whole text
-
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps({"status": "completed", "task_id": self.request.id}),
-            brain_id=payload.brain_id,
-            expires_in=3600 * 24 * 7,
+        parent_task_id = self.request.id
+        steps = []
+        if persistence_batches:
+            set_ingestion_task_status(
+                parent_task_id,
+                payload.brain_id,
+                "persisting",
+                stage="persisting",
+                counts={"relationships": len(persistence_batches)},
+            )
+            steps.append(
+                process_architect_relationships.si(
+                    {
+                        "relationships": persistence_batches,
+                        "brain_id": payload.brain_id,
+                        "session_id": session_id,
+                        "parent_task_id": parent_task_id,
+                    }
+                )
+            )
+        steps.append(
+            finalize_ingestion_task.si(
+                parent_task_id,
+                payload.brain_id,
+                "completed",
+            )
         )
+        from celery import chain
 
-        return self.request.id
+        chain(*steps).apply_async()
+        return parent_task_id
 
     except Exception as e:
         brain_id = payload.brain_id if payload else args.get("brain_id", "default")
-        error_result = {
-            "status": "failed",
-            "task_id": self.request.id,
-            "error": str(e),
-            "payload": payload.model_dump(mode="json") if payload else args,
-        }
-
-        cache_adapter.set(
-            key=f"task:{self.request.id}",
-            value=json.dumps(error_result),
-            brain_id=brain_id,
-            expires_in=3600 * 24 * 7,
+        set_ingestion_task_status(
+            self.request.id,
+            brain_id,
+            "failed",
+            stage="failed",
+            error=str(e),
         )
-
         raise
 
 
@@ -897,6 +1160,7 @@ def consolidate_graph_async(
     session_id: str,
     brain_id: str = "default",
     ingestion_session_id: str = None,
+    relationships: Optional[List[dict]] = None,
 ):
     """
     Consolidate graph after all processing tasks complete.
@@ -921,22 +1185,25 @@ def consolidate_graph_async(
         )
         return
 
-    relationships_data_str = _redis_client.get(
-        f"session:{session_id}:relationships", brain_id=brain_id
-    )
-    if not relationships_data_str:
+    relationships_data = relationships
+    if not relationships_data:
+        relationships_data_str = _redis_client.get(
+            f"session:{session_id}:relationships", brain_id=brain_id
+        )
+        if relationships_data_str:
+            relationships_data = json.loads(relationships_data_str)
+    if not relationships_data:
         print(
             f"[DEBUG (consolidate_graph_async)]: No relationships data found for session {session_id}"
         )
         return
 
-    relationships_data = json.loads(relationships_data_str)
-    relationships = [
+    relationship_models = [
         ArchitectAgentRelationship(**rel_data) for rel_data in relationships_data
     ]
 
     print(
-        f"[DEBUG (consolidate_graph_async)]: Consolidating graph with {len(relationships)} relationships"
+        f"[DEBUG (consolidate_graph_async)]: Consolidating graph with {len(relationship_models)} relationships"
     )
 
     project_name = os.getenv("LANGSMITH_PROJECT", "brainapi")
@@ -951,7 +1218,7 @@ def consolidate_graph_async(
             tags=["consolidate_graph", "janitor", "kg_agent"],
             metadata=tracing_metadata,
         ):
-            consolidate_graph(relationships, brain_id=brain_id)
+            consolidate_graph(relationship_models, brain_id=brain_id)
         try:
             from langchain_core.tracers.langchain import wait_for_all_tracers
 
@@ -963,11 +1230,7 @@ def consolidate_graph_async(
         )
         _redis_client.delete(f"session:{session_id}:relationships", brain_id=brain_id)
         _redis_client.client.delete(f"{brain_id}:session:{session_id}:pending_tasks")
-        return (
-            consolidation_response.model_dump(mode="json")
-            if hasattr(consolidation_response, "model_dump")
-            else None
-        )
+        return None
     except Exception as e:
         print(
             f"[DEBUG (consolidate_graph_async)]: Consolidation failed for session {session_id}: {e}"

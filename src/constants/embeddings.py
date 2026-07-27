@@ -39,7 +39,7 @@ class Vector(BaseModel):
     distance: Optional[float] = Field(
         default=None,
         description=(
-            "The distance between the query and the result. "
+            "Cosine distance between the query and the result where lower is nearer. "
             "This is only available for search results."
         ),
     )

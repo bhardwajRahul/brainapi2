@@ -548,47 +548,8 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
             "[DEBUG (architect_agent_create_relationship)]: Relationships data: ",
             relationships_data,
         )
-        if relationships_data:
-            from src.workers.tasks.ingestion import process_architect_relationships
-            from src.lib.redis.client import _redis_client
-
-            print(
-                "[DEBUG (architect_agent_create_relationship)]: Sending relationships to ingestion task"
-            )
-
-            session_id = getattr(self.architect_agent, "session_id", None)
-            if session_id:
-                _redis_client.client.incr(
-                    f"{self.brain_id}:session:{session_id}:pending_tasks"
-                )
-
-            task_result = process_architect_relationships.delay(
-                {
-                    "relationships": relationships_data,
-                    "brain_id": self.brain_id,
-                    "session_id": session_id,
-                }
-            )
-            print(
-                f"[DEBUG (architect_agent_create_relationship)]: Task {task_result.id} queued for session {session_id}"
-            )
-
-        self.architect_agent.relationships_set.extend(output_rels)
-
-        session_id = getattr(self.architect_agent, "session_id", None)
-        if session_id and output_rels:
-            from src.lib.redis.client import _redis_client
-
-            relationships_data = [
-                rel.model_dump(mode="json")
-                for rel in self.architect_agent.relationships_set
-            ]
-            _redis_client.set(
-                f"session:{session_id}:relationships",
-                json.dumps(relationships_data),
-                brain_id=self.brain_id,
-                expires_in=3600,
-            )
+        if output_rels:
+            self.architect_agent.queue_relationships_for_persistence(output_rels)
 
         wrong_relationships = []
         if getattr(janitor_response, "wrong_relationships", []):
@@ -611,11 +572,5 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                     [node for node in newly_created_nodes]
                 ),
             }
-
-        # for entity_uuid in used_entity_uuids:
-        #     if entity_uuid in self.architect_agent.entities:
-        #         del self.architect_agent.entities[entity_uuid]
-
-        # return natural_lang
 
         return json.dumps({"status": "success"})

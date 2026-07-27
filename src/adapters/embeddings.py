@@ -169,7 +169,12 @@ class VectorStoreAdapter:
         Search vectors in the vector store and return the top k vectors.
         """
         vectors = self.vector_store.search_vectors(data_vector, brain_id, store, k)
-        return sorted(vectors, key=lambda x: x.distance, reverse=True)
+        return sorted(
+            vectors,
+            key=lambda x: (
+                float("inf") if x.distance is None else float(x.distance)
+            ),
+        )
 
     def get_by_ids(
         self, ids: list[str], store: str, brain_id: str = "default"

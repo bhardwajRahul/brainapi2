@@ -10,7 +10,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import os
 import uuid
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 from src.config import config
 from src.constants.kg import Node
@@ -28,19 +29,23 @@ from src.services.input.agents import (
 import langsmith
 
 
+@dataclass
+class EnrichmentOrchestrationResult:
+    session_id: Optional[str]
+    ingestion_session_id: str
+    brain_id: str
+    enrichment_relationships: List[dict] = field(default_factory=list)
+    should_consolidate: bool = False
+
+
 def enrich_kg_from_input(
     input: str, targeting: Optional[Node] = None, brain_id: str = "default"
-) -> str:
+) -> EnrichmentOrchestrationResult:
     """
     Orchestrates enrichment of the knowledge graph from a free-text input.
 
-    Runs the scout and architect agents to extract entities and relationships from the provided input, and optionally consolidates the resulting relationships into the graph. Side effects include updating the knowledge graph and printing debug summaries to standard output.
-
-    Parameters:
-        input (str): Free-text content to process and ingest into the knowledge graph.
-        targeting (Optional[Node]): Optional target node guiding where or how the input should be applied within the graph.
-        brain_id (str): Identifier for the processing context/brain to use for agent operations and consolidation.
-
+    Runs the scout and architect agents to extract entities and relationships from the provided input
+    and returns the collected persistence batch for the caller to write.
     """
 
     ingestion_session_id = str(uuid.uuid4())
@@ -55,10 +60,12 @@ def enrich_kg_from_input(
             "flow": "enrich_kg_from_input",
         },
     ):
-        _enrich_kg_impl(input, targeting, brain_id, ingestion_session_id)
+        return _enrich_kg_impl(input, targeting, brain_id, ingestion_session_id)
 
 
-def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: str):
+def _enrich_kg_impl(
+    input, targeting, brain_id: str, ingestion_session_id: str
+) -> EnrichmentOrchestrationResult:
     ingestion_manager = IngestionManager(
         embeddings_adapter, vector_store_adapter, graph_adapter
     )
@@ -79,97 +86,36 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
         ingestion_manager=ingestion_manager,
     )
 
-    if config.pipeline_mode == "lightweight":
-        print("[DEBUG (enrich_kg_from_input)]: Lightweight pipeline mode selected")
+    mode = "coarse" if config.pipeline_mode == "lightweight" else "granular"
+    print(f"[DEBUG (enrich_kg_from_input)]: {config.pipeline_mode} pipeline mode selected")
 
-        entities = scout_agent.run(
-            input,
-            targeting=targeting,
-            brain_id=brain_id,
-            ingestion_session_id=ingestion_session_id,
-            mode="coarse",
-        )
-        print("[DEBUG (initial_scout_entities)]: ", entities.entities)
-        architect_agent.run_tooler(
-            input,
-            entities.entities,
-            targeting=targeting,
-            brain_id=brain_id,
-            timeout=20000,
-            ingestion_session_id=ingestion_session_id,
-            mode="coarse",
-        )
+    entities = scout_agent.run(
+        input,
+        targeting=targeting,
+        brain_id=brain_id,
+        ingestion_session_id=ingestion_session_id,
+        mode=("coarse" if mode == "coarse" else "granular"),
+    )
+    print("[DEBUG (initial_scout_entities)]: ", entities.entities)
+    architect_agent.run_tooler(
+        input,
+        entities.entities,
+        targeting=targeting,
+        brain_id=brain_id,
+        timeout=20000,
+        ingestion_session_id=ingestion_session_id,
+        mode=("coarse" if mode == "coarse" else "granular"),
+    )
 
-        return
-
-    if config.pipeline_mode == "accurate":
-        print(f"[DEBUG (ingestion_session_id)]: {ingestion_session_id}")
-
-        entities = scout_agent.run(
-            input,
-            targeting=targeting,
-            brain_id=brain_id,
-            ingestion_session_id=ingestion_session_id,
-        )
-
-        architect_agent.run_tooler(
-            input,
-            entities.entities,
-            targeting=targeting,
-            brain_id=brain_id,
-            timeout=20000,
-            ingestion_session_id=ingestion_session_id,
-        )
-
-        if config.run_graph_consolidator and architect_agent.session_id:
-            from src.lib.redis.client import _redis_client
-            import time
-
-            print(
-                f"[DEBUG (enrich_kg_from_input)]: Waiting for async tasks to complete for session {architect_agent.session_id}"
-            )
-
-            max_wait_time = 300
-            check_interval = 2
-            elapsed_time = 0
-
-            while elapsed_time < max_wait_time:
-                pending_count = _redis_client.client.get(
-                    f"{brain_id}:session:{architect_agent.session_id}:pending_tasks"
-                )
-
-                if pending_count is None or int(pending_count) == 0:
-                    print(
-                        f"[DEBUG (enrich_kg_from_input)]: All async tasks completed after {elapsed_time}s"
-                    )
-                    break
-
-                print(
-                    f"[DEBUG (enrich_kg_from_input)]: {pending_count} tasks still pending, waiting..."
-                )
-                time.sleep(check_interval)
-                elapsed_time += check_interval
-            else:
-                print(
-                    f"[DEBUG (enrich_kg_from_input)]: Timeout waiting for tasks to complete after {max_wait_time}s"
-                )
-
-            print(
-                "[DEBUG (consolidate_graph)]: Consolidating graph with ",
-                len(architect_agent.relationships_set),
-                " relationships",
-            )
-
-            from src.workers.tasks.ingestion import consolidate_graph_async
-
-            task_result = consolidate_graph_async.delay(
-                session_id=architect_agent.session_id,
-                brain_id=brain_id,
-                ingestion_session_id=ingestion_session_id,
-            )
-            print(
-                f"[DEBUG (enrich_kg_from_input)]: Consolidation task {task_result.id} queued"
-            )
+    pending = architect_agent.take_pending_relationships()
+    enrichment_relationships = [
+        rel.model_dump(mode="json") for rel in pending
+    ]
+    should_consolidate = bool(
+        config.pipeline_mode == "accurate"
+        and config.run_graph_consolidator
+        and enrichment_relationships
+    )
 
     try:
         from langchain_core.tracers.langchain import wait_for_all_tracers
@@ -177,3 +123,11 @@ def _enrich_kg_impl(input: str, targeting, brain_id: str, ingestion_session_id: 
         wait_for_all_tracers()
     except ImportError:
         pass
+
+    return EnrichmentOrchestrationResult(
+        session_id=architect_agent.session_id,
+        ingestion_session_id=ingestion_session_id,
+        brain_id=brain_id,
+        enrichment_relationships=enrichment_relationships,
+        should_consolidate=should_consolidate,
+    )

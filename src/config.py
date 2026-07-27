@@ -33,6 +33,14 @@ def _normalize_openai_base_url(raw: str | None) -> str | None:
     return normalized
 
 
+def validate_pipeline_mode(mode: str | None) -> Literal["lightweight", "accurate"]:
+    if mode not in ("lightweight", "accurate"):
+        raise ValueError(
+            f"Invalid PIPELINE_MODE: {mode!r}. Expected 'lightweight' or 'accurate'."
+        )
+    return mode
+
+
 class AzureConfig:
     """
     Configuration class for the Azure configuration.
@@ -111,6 +119,26 @@ class AnthropicConfig:
             raise ValueError("Anthropic small LLM model is not set")
         if require_large and not self.large_llm_model:
             raise ValueError("Anthropic large LLM model is not set")
+
+
+class DeepSeekConfig:
+    def __init__(self):
+        self.api_key = os.getenv("DEEPSEEK_API_KEY")
+        self.base_url = "https://api.deepseek.com"
+        self.small_llm_model = os.getenv(
+            "DEEPSEEK_SMALL_LLM_MODEL", "deepseek-v4-flash"
+        )
+        self.large_llm_model = os.getenv(
+            "DEEPSEEK_LARGE_LLM_MODEL", "deepseek-v4-pro"
+        )
+
+    def validate_llm(self, require_large: bool):
+        if not self.api_key:
+            raise ValueError("DeepSeek API key is not set")
+        if not self.small_llm_model:
+            raise ValueError("DeepSeek small LLM model is not set")
+        if require_large and not self.large_llm_model:
+            raise ValueError("DeepSeek large LLM model is not set")
 
 
 class GCPConfig:
@@ -395,7 +423,15 @@ class SpacyConfig:
 
 
 _MODES = ("local", "remote")
-_PROVIDERS = ("ollama", "azure", "openai", "anthropic", "gcp_vertex", "amazon_bedrock")
+_PROVIDERS = (
+    "ollama",
+    "azure",
+    "openai",
+    "anthropic",
+    "deepseek",
+    "gcp_vertex",
+    "amazon_bedrock",
+)
 
 
 class Config:
@@ -461,6 +497,11 @@ class Config:
             or self.llm_large_provider == "anthropic"
         )
         use_anthropic_large = self.llm_large_provider == "anthropic"
+        use_deepseek_llm = (
+            self.llm_small_provider == "deepseek"
+            or self.llm_large_provider == "deepseek"
+        )
+        use_deepseek_large = self.llm_large_provider == "deepseek"
         use_ollama = (
             self.llm_small_provider == "ollama"
             or self.llm_large_provider == "ollama"
@@ -499,6 +540,10 @@ class Config:
         if self.anthropic is not None:
             self.anthropic.validate_llm(require_large=use_anthropic_large)
 
+        self.deepseek = DeepSeekConfig() if use_deepseek_llm else None
+        if self.deepseek is not None:
+            self.deepseek.validate_llm(require_large=use_deepseek_large)
+
         self.ollama = OllamaConfig() if use_ollama else None
         self.embeddings = EmbeddingsConfig(mode=self.models_mode)
 
@@ -520,8 +565,8 @@ class Config:
         self.docparser_endpoint = os.getenv("DOCPARSER_ENDPOINT")
         self.docparser_token = os.getenv("DOCPARSER_TOKEN")
         self.app_host = os.getenv("APP_HOST")
-        self.pipeline_mode: Literal["lightweight", "accurate"] = os.getenv(
-            "PIPELINE_MODE"
+        self.pipeline_mode: Literal["lightweight", "accurate"] = validate_pipeline_mode(
+            os.getenv("PIPELINE_MODE", "accurate")
         )
         self.ocr_mode: Literal["docling", "docparser"] = os.getenv(
             "OCR_MODE", "docling"

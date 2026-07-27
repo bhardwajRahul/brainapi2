@@ -10,7 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from typing import Any, List, Optional, Tuple, Union
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from src.constants.data import Observation, PartialNode, PartialPredicate, TextChunk
 from src.constants.kg import (
@@ -60,14 +60,38 @@ class IngestionStructuredDataElement(BaseModel):
 class RequestPartialNode(PartialNode):
     uuid: Optional[str] = Field(None, description="The id of the node.")
     type: str = Field(description="The type of the node.")
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="Optional labels; defaults to [type] when omitted.",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="The description of the node.",
+    )
+    properties: Optional[dict] = Field(
+        default_factory=dict,
+        description="The properties of the node.",
+    )
     happened_at: Optional[str] = Field(
         None,
         description="The date and time the node happened at if known otherwise None. Mostly used for event nodes.",
     )
 
+    @model_validator(mode="after")
+    def default_labels_from_type(self):
+        if not self.labels:
+            self.labels = [self.type]
+        if self.properties is None:
+            self.properties = {}
+        return self
+
 
 class RequestPartialPredicate(PartialPredicate):
     uuid: Optional[str] = Field(None, description="The id of the relationship.")
+    description: Optional[str] = Field(
+        default=None,
+        description="The description of the relationship.",
+    )
     amount: Optional[Union[int, float]] = Field(
         None,
         description="The amount of the relationship, if it is a quantitative relationship.",
@@ -110,6 +134,16 @@ class PartialNodeFilter(BaseModel):
         description="An extra description that explains what this node is about, helpful for entity resolution.",
     )
 
+    @model_validator(mode="after")
+    def require_uuid_or_name_and_type(self):
+        if self.uuid:
+            return self
+        if self.name and self.type:
+            return self
+        raise ValueError(
+            "Anchor must include either uuid, or both name and type."
+        )
+
 
 class IngestionStructuredRequestBody(BaseModel):
     """
@@ -120,17 +154,26 @@ class IngestionStructuredRequestBody(BaseModel):
         ...,
         description="The list of event-centric information triples to ingest.",
     )
-    anchor: Optional[Union[str, PartialNodeFilter]] = Field(
+    anchor: Optional[PartialNodeFilter] = Field(
         None,
         description="The related information to connect the structured data to.",
     )
     text: Optional[str] = Field(
-        ...,
+        default=None,
         description="Additional text context for the structured data.",
     )
     brain_id: str = Field(
         default="default", description="The brain identifier to store the data in."
     )
+
+    @field_validator("anchor", mode="before")
+    @classmethod
+    def reject_string_anchor(cls, value):
+        if isinstance(value, str):
+            raise ValueError(
+                "Anchor must be an object with uuid or name+type, not a string."
+            )
+        return value
 
 
 class RetrieveRequestResponse(BaseModel):

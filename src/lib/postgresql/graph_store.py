@@ -77,32 +77,15 @@ class _BrainGraph:
 
     def upsert_node(self, labels: list[str], identification: dict, properties: dict) -> str:
         node_uuid = properties.get("uuid") or identification.get("uuid")
-        match_uuid = None
-        for candidate_uuid, data in self.graph.nodes(data=True):
-            if identification.get("uuid") and candidate_uuid != identification["uuid"]:
-                continue
-            if identification.get("name") and data.get("name") != identification.get("name"):
-                continue
-            if labels and not set(labels).issubset(set(data.get("labels") or [])):
-                continue
-            extra_match = True
-            for key, value in identification.items():
-                if key in {"uuid", "name"}:
-                    continue
-                if data.get(key) != value:
-                    extra_match = False
-                    break
-            if extra_match:
-                match_uuid = candidate_uuid
-                break
-        if match_uuid is None:
-            match_uuid = node_uuid or identification.get("uuid")
-        if match_uuid is None:
+        if not node_uuid:
             raise ValueError("Unable to resolve node uuid for merge")
+        match_uuid = node_uuid if node_uuid in self.graph else node_uuid
         merged = {}
         if match_uuid in self.graph:
             merged.update(self.node_data(match_uuid))
         merged.update(properties)
+        if identification.get("name") is not None:
+            merged["name"] = identification.get("name")
         merged["labels"] = labels or merged.get("labels") or []
         merged["uuid"] = match_uuid
         merged.setdefault("name", identification.get("name"))
@@ -398,16 +381,32 @@ class PostgreSQLGraphStore:
         object_name: Any,
         rel_type: str,
         rel_props: dict[str, Any],
+        subject_uuid: Optional[str] = None,
+        object_uuid: Optional[str] = None,
     ) -> Optional[tuple[dict, dict]]:
         brain = self._load_brain(brain_id)
-        source_uuid = self.resolve_node_by_name_labels(brain, subject_labels, subject_name)
-        target_uuid = self.resolve_node_by_name_labels(brain, object_labels, object_name)
+        source_uuid = subject_uuid if subject_uuid and subject_uuid in brain.graph else None
+        target_uuid = object_uuid if object_uuid and object_uuid in brain.graph else None
+        if not source_uuid:
+            source_uuid = self.resolve_node_by_name_labels(
+                brain, subject_labels, subject_name
+            )
+        if not target_uuid:
+            target_uuid = self.resolve_node_by_name_labels(
+                brain, object_labels, object_name
+            )
         if not source_uuid or not target_uuid:
             return None
         props = dict(rel_props)
         props["rel_type"] = rel_type
         rel_uuid = props.get("uuid") or f"{source_uuid}-{rel_type}-{target_uuid}"
         props["uuid"] = rel_uuid
+        if brain.graph.has_edge(source_uuid, target_uuid, key=rel_uuid):
+            existing = dict(brain.graph.get_edge_data(source_uuid, target_uuid, key=rel_uuid))
+            existing.update(props)
+            props = existing
+            props["uuid"] = rel_uuid
+            props["rel_type"] = rel_type
         brain.graph.add_edge(source_uuid, target_uuid, key=rel_uuid, **props)
         self._persist_relationship(
             brain_id, rel_uuid, rel_type, source_uuid, target_uuid, props

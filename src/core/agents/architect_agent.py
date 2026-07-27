@@ -64,9 +64,15 @@ from src.core.agents.tools.architect_agent.ArchitectAgentMarkEntitiesAsUsedTool 
     ArchitectAgentMarkEntitiesAsUsedTool,
 )
 from src.core.plugins.prompts import prompt_registry
+from src.core.saving.identity import (
+    stable_flow_key,
+    stable_node_id,
+    stable_relationship_id,
+)
 from src.core.saving.ingestion_manager import IngestionManager
 from src.services.api.constants.requests import IngestionTripleSet
 from src.utils.cleanup import strip_properties
+from src.utils.dates import normalize_date_string
 from src.utils.similarity.vectors import cosine_similarity
 
 # from src.core.agents.tools.kg_agent import (
@@ -80,11 +86,18 @@ MAX_RECURSION_LIMIT = 100
 
 def _ingestion_partial_node_entity(node) -> ArchitectAgentEntity:
     return ArchitectAgentEntity(
-        uuid=node.uuid or str(uuid.uuid4()),
+        uuid=stable_node_id(
+            node.name,
+            node.type,
+            getattr(node, "happened_at", None),
+            getattr(node, "uuid", None),
+        ),
         name=node.name,
         type=node.type,
         description=node.description,
         properties=node.properties or {},
+        happened_at=getattr(node, "happened_at", None),
+        polarity=getattr(node, "polarity", None) or "neutral",
     )
 
 
@@ -97,8 +110,138 @@ def _to_architect_relationship(relationship) -> ArchitectAgentRelationship:
         else relationship.model_dump(mode="json")
     )
     if not data.get("flow_key"):
-        data["flow_key"] = str(uuid.uuid4())
+        data["flow_key"] = stable_flow_key(
+            event_uuid=None,
+            event_name=(data.get("tip") or {}).get("name")
+            if isinstance(data.get("tip"), dict)
+            else getattr(data.get("tip"), "name", None),
+            event_type=(data.get("tip") or {}).get("type")
+            if isinstance(data.get("tip"), dict)
+            else getattr(data.get("tip"), "type", None),
+            happened_at=(data.get("tip") or {}).get("happened_at")
+            if isinstance(data.get("tip"), dict)
+            else getattr(data.get("tip"), "happened_at", None),
+        )
+    if not data.get("uuid"):
+        tail = data.get("tail") or {}
+        tip = data.get("tip") or {}
+        tail_uuid = (
+            tail.get("uuid")
+            if isinstance(tail, dict)
+            else getattr(tail, "uuid", "")
+        )
+        tip_uuid = (
+            tip.get("uuid") if isinstance(tip, dict) else getattr(tip, "uuid", "")
+        )
+        data["uuid"] = stable_relationship_id(
+            tail_uuid or "",
+            data.get("name") or "",
+            tip_uuid or "",
+            data.get("flow_key"),
+        )
     return ArchitectAgentRelationship(**data)
+
+
+def ingestion_triples_to_relationships(
+    current_triples: List[IngestionTripleSet],
+    partial_triples: List[IngestionTripleSet],
+) -> Tuple[List[ArchitectAgentRelationship], Dict[Tuple, ArchitectAgentEntity]]:
+    triple_entity_registry: Dict[Tuple, ArchitectAgentEntity] = {}
+
+    def _registry_key(node) -> Tuple:
+        name = (node.name or "").strip().lower()
+        entity_type = (node.type or "").strip().lower()
+        if entity_type == "event":
+            return (
+                name,
+                entity_type,
+                normalize_date_string(getattr(node, "happened_at", None)) or "",
+            )
+        return (name, entity_type)
+
+    def _triple_entity(node) -> ArchitectAgentEntity:
+        key = _registry_key(node)
+        if key not in triple_entity_registry:
+            triple_entity_registry[key] = _ingestion_partial_node_entity(node)
+        elif getattr(node, "uuid", None):
+            existing = triple_entity_registry[key]
+            if node.uuid and existing.uuid != node.uuid:
+                triple_entity_registry[key] = _ingestion_partial_node_entity(node)
+        return triple_entity_registry[key]
+
+    triple_relationships: List[ArchitectAgentRelationship] = []
+    for cr in current_triples:
+        if not cr.subject or not cr.subj_event:
+            continue
+        subject = _triple_entity(cr.subject)
+        event = _triple_entity(cr.event)
+        obj = _triple_entity(cr.object)
+        flow_key = stable_flow_key(
+            event_uuid=event.uuid,
+            event_name=event.name,
+            event_type=event.type,
+            happened_at=event.happened_at,
+            supplied=cr.subj_event.uuid or cr.event_obj.uuid,
+        )
+        subj_event_uuid = cr.subj_event.uuid or stable_relationship_id(
+            subject.uuid, cr.subj_event.name, event.uuid, flow_key
+        )
+        event_obj_uuid = cr.event_obj.uuid or stable_relationship_id(
+            event.uuid, cr.event_obj.name, obj.uuid, flow_key
+        )
+        triple_relationships.extend(
+            [
+                ArchitectAgentRelationship(
+                    tail=subject,
+                    name=cr.subj_event.name,
+                    tip=event,
+                    description=cr.subj_event.description,
+                    amount=cr.subj_event.amount,
+                    properties=cr.subj_event.properties or {},
+                    uuid=subj_event_uuid,
+                    flow_key=flow_key,
+                ),
+                ArchitectAgentRelationship(
+                    tail=event,
+                    name=cr.event_obj.name,
+                    tip=obj,
+                    description=cr.event_obj.description,
+                    amount=cr.event_obj.amount,
+                    properties=cr.event_obj.properties or {},
+                    uuid=event_obj_uuid,
+                    flow_key=flow_key,
+                ),
+            ]
+        )
+    for pt in partial_triples:
+        event = _triple_entity(pt.event)
+        obj = _triple_entity(pt.object)
+        if pt.subject:
+            _triple_entity(pt.subject)
+        flow_key = stable_flow_key(
+            event_uuid=event.uuid,
+            event_name=event.name,
+            event_type=event.type,
+            happened_at=event.happened_at,
+            supplied=pt.event_obj.uuid,
+        )
+        event_obj_uuid = pt.event_obj.uuid or stable_relationship_id(
+            event.uuid, pt.event_obj.name, obj.uuid, flow_key
+        )
+        triple_relationships.append(
+            ArchitectAgentRelationship(
+                tail=event,
+                name=pt.event_obj.name,
+                tip=obj,
+                description=pt.event_obj.description,
+                amount=pt.event_obj.amount,
+                properties=pt.event_obj.properties or {},
+                uuid=event_obj_uuid,
+                flow_key=flow_key,
+            ),
+        )
+
+    return triple_relationships, triple_entity_registry
 
 
 class ArchitectAgent:
@@ -155,12 +298,30 @@ class ArchitectAgent:
         self.embeddings = embeddings
         self.agent = None
         self.relationships_set: List[ArchitectAgentRelationship] = []
+        self.pending_persistence_batches: List[List[ArchitectAgentRelationship]] = []
         self.used_entities_dict = {}
         self.ingestion_manager = ingestion_manager
         self.session_id: Optional[str] = None
         self.janitor_agent = None
         self._janitor_agent_brain_id = None
         # self.database_desc = database_desc
+
+    def take_pending_relationships(self) -> List[ArchitectAgentRelationship]:
+        pending: List[ArchitectAgentRelationship] = []
+        for batch in self.pending_persistence_batches:
+            pending.extend(batch)
+        self.pending_persistence_batches.clear()
+        if pending:
+            return pending
+        return list(self.relationships_set)
+
+    def queue_relationships_for_persistence(
+        self, relationships: List[ArchitectAgentRelationship]
+    ) -> None:
+        if not relationships:
+            return
+        self.pending_persistence_batches.append(list(relationships))
+        self.relationships_set.extend(relationships)
 
     def _get_tools(
         self,
@@ -759,36 +920,10 @@ class ArchitectAgent:
             for rel in output_rels
             if isinstance(rel, ArchitectAgentRelationship)
         ]
-        if relationships_data:
-            from src.lib.redis.client import _redis_client
-            from src.workers.tasks.ingestion import process_architect_relationships
-
-            if self.session_id:
-                _redis_client.client.incr(
-                    f"{brain_id}:session:{self.session_id}:pending_tasks"
-                )
-
-            process_architect_relationships.delay(
-                {
-                    "relationships": relationships_data,
-                    "brain_id": brain_id,
-                    "session_id": self.session_id,
-                }
-            )
-
-        self.relationships_set.extend(output_rels)
-
-        if self.session_id and output_rels:
-            from src.lib.redis.client import _redis_client
-
-            _redis_client.set(
-                f"session:{self.session_id}:relationships",
-                json.dumps(
-                    [rel.model_dump(mode="json") for rel in self.relationships_set]
-                ),
-                brain_id=brain_id,
-                expires_in=3600,
-            )
+        if output_rels:
+            self.queue_relationships_for_persistence(output_rels)
+        elif relationships_data:
+            pass
 
         wrong_relationships = (
             getattr(janitor_response, "wrong_relationships", []) or []
@@ -806,6 +941,7 @@ class ArchitectAgent:
         ingestion_session_id: Optional[str] = None,
         partial_triples: List[IngestionTripleSet] = [],
         current_triples: List[IngestionTripleSet] = [],
+        persist_submitted: bool = True,
     ) -> ArchitectAgentResponse:
         """
         Given the provided text and partial/full triples, discover relationships and new nodes for the provided entities.
@@ -826,62 +962,9 @@ class ArchitectAgent:
                 - relationships: list of relationships the agent created between entities or new nodes.
         """
 
-        triple_entity_registry: Dict[Tuple[str, str], ArchitectAgentEntity] = {}
-
-        def _triple_entity(node) -> ArchitectAgentEntity:
-            key = (node.name.strip().lower(), (node.type or "").strip().lower())
-            if key not in triple_entity_registry:
-                triple_entity_registry[key] = _ingestion_partial_node_entity(node)
-            return triple_entity_registry[key]
-
-        triple_relationships: List[ArchitectAgentRelationship] = []
-        for cr in current_triples:
-            if not cr.subject or not cr.subj_event:
-                continue
-            flow_key = str(uuid.uuid4())
-            subject = _triple_entity(cr.subject)
-            event = _triple_entity(cr.event)
-            obj = _triple_entity(cr.object)
-            triple_relationships.extend(
-                [
-                    ArchitectAgentRelationship(
-                        tail=subject,
-                        name=cr.subj_event.name,
-                        tip=event,
-                        description=cr.subj_event.description,
-                        amount=cr.subj_event.amount,
-                        properties=cr.subj_event.properties or {},
-                        uuid=str(uuid.uuid4()),
-                        flow_key=flow_key,
-                    ),
-                    ArchitectAgentRelationship(
-                        tail=event,
-                        name=cr.event_obj.name,
-                        tip=obj,
-                        description=cr.event_obj.description,
-                        amount=cr.event_obj.amount,
-                        properties=cr.event_obj.properties or {},
-                        uuid=str(uuid.uuid4()),
-                        flow_key=flow_key,
-                    ),
-                ]
-            )
-        for pt in partial_triples:
-            flow_key = str(uuid.uuid4())
-            event = _triple_entity(pt.event)
-            obj = _triple_entity(pt.object)
-            triple_relationships.append(
-                ArchitectAgentRelationship(
-                    tail=event,
-                    name=pt.event_obj.name,
-                    tip=obj,
-                    description=pt.event_obj.description,
-                    amount=pt.event_obj.amount,
-                    properties=pt.event_obj.properties or {},
-                    uuid=str(uuid.uuid4()),
-                    flow_key=flow_key,
-                ),
-            )
+        triple_relationships, triple_entity_registry = ingestion_triples_to_relationships(
+            current_triples, partial_triples
+        )
 
         triple_keys = set(triple_entity_registry.keys())
         entities = [
@@ -892,6 +975,8 @@ class ArchitectAgent:
                     type=te.type,
                     description=te.description,
                     properties=te.properties or {},
+                    happened_at=te.happened_at,
+                    polarity=te.polarity,
                 )
                 for te in triple_entity_registry.values()
             ],
@@ -907,6 +992,15 @@ class ArchitectAgent:
         self.entities = entities_dict
         self.session_id = str(uuid.uuid4())
         self.relationships_set.clear()
+        self.pending_persistence_batches.clear()
+
+        if triple_relationships and persist_submitted:
+            self._persist_relationships(
+                triple_relationships,
+                text=text or "",
+                brain_id=brain_id,
+                targeting=targeting,
+            )
 
         self._get_agent(
             output_schema=_ArchitectAgentResponse,
@@ -1259,6 +1353,7 @@ class ArchitectAgent:
 
         self.session_id = str(uuid.uuid4())
         self.relationships_set.clear()
+        self.pending_persistence_batches.clear()
 
         entities_dict = {
             entity.uuid: strip_properties([entity.model_dump(mode="json")])[0]

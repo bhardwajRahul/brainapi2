@@ -14,6 +14,20 @@ from src.adapters.graph import GraphAdapter
 from src.adapters.embeddings import VectorStoreAdapter
 from src.core.agents.scout_agent import ScoutEntity
 from src.core.agents.architect_agent import ArchitectAgentRelationship
+from src.core.saving.identity import (
+    stable_flow_key,
+    stable_node_id,
+    stable_relationship_id,
+    stable_uuid,
+)
+
+__all__ = [
+    "IngestionManager",
+    "stable_flow_key",
+    "stable_node_id",
+    "stable_relationship_id",
+    "stable_uuid",
+]
 
 
 class IngestionManager:

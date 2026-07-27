@@ -10,7 +10,7 @@ Modified By: the developer formerly known as Christian Nonis at <alch.infoemail@
 
 import json
 from src.utils.logging import log
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from src.services.api.dependencies import get_brain_id
 from src.services.kg_agent.main import cache_adapter
 
@@ -52,11 +52,7 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
     try:
         str_result = cache_adapter.get_task(task_id, brain_id=brain_id)
         if str_result is None:
-            return {
-                "task_id": task_id,
-                "status": "pending",
-                "result": {"message": "Task is still processing or not found"},
-            }
+            raise HTTPException(status_code=404, detail="Task not found")
         if isinstance(str_result, bytes):
             result = json.loads(str_result.decode("utf-8"))
         else:
@@ -66,6 +62,8 @@ async def get_task(task_id: str, brain_id: str = Depends(get_brain_id)):
             "task_id": task_id,
             "status": result.get("status", "unknown"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         log(f"Error in get_task: {type(e).__name__}: {str(e)}")
         return {
