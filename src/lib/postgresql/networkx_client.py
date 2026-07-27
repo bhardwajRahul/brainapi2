@@ -947,6 +947,101 @@ class NetworkXGraphClient(GraphClient):
         return neighbors
 
 
+    def _node_from_brain(self, brain, uuid: str) -> Node:
+        data = brain.node_data(uuid) if uuid in brain.graph else {}
+        node_kwargs: Dict[str, Any] = {
+            "uuid": uuid,
+            "name": data.get("name", "") or "",
+            "labels": data.get("labels", []) or [],
+            "description": data.get("description", "") or "",
+            "properties": always_dict(data),
+            "polarity": data.get("polarity", "neutral") or "neutral",
+            "metadata": always_dict(data.get("metadata", {})),
+            "happened_at": data.get("happened_at", "") or "",
+            "observations": data.get("observations", []) or [],
+        }
+        last_updated = data.get("last_updated")
+        if last_updated:
+            node_kwargs["last_updated"] = last_updated
+        return Node(**node_kwargs)
+
+
+    def _predicate_from_edge(self, edge_data: dict, direction: str) -> Predicate:
+        edge_data = always_dict(edge_data)
+        predicate_kwargs: Dict[str, Any] = {
+            "uuid": edge_data.get("uuid", "") or "",
+            "name": edge_data.get("rel_type", "") or edge_data.get("name", "") or "",
+            "description": edge_data.get("description", "") or "",
+            "direction": direction,
+            "properties": always_dict(edge_data),
+            "flow_key": edge_data.get("flow_key", "") or "",
+            "observations": edge_data.get("observations", []) or [],
+            "amount": edge_data.get("amount"),
+        }
+        last_updated = edge_data.get("last_updated")
+        if last_updated:
+            predicate_kwargs["last_updated"] = last_updated
+        return Predicate(**predicate_kwargs)
+
+
+    def _incident_edges(
+        self, brain, node_uuid: str
+    ) -> List[Tuple[str, str, dict, str]]:
+        if node_uuid not in brain.graph:
+            return []
+        edges: List[Tuple[str, str, dict, str]] = []
+        for _, neighbor, key, data in brain.graph.out_edges(
+            node_uuid, keys=True, data=True
+        ):
+            edges.append((neighbor, key, dict(data), "out"))
+        for neighbor, _, key, data in brain.graph.in_edges(
+            node_uuid, keys=True, data=True
+        ):
+            edges.append((neighbor, key, dict(data), "in"))
+        return edges
+
+
+    def _event_path_records(
+        self,
+        brain,
+        node_uuids: list[str],
+        predicate_uuid: Optional[str] = None,
+        flow_key: Optional[str] = None,
+    ):
+        for n_uuid in node_uuids:
+            if n_uuid not in brain.graph:
+                continue
+            for m_uuid, r1_key, r1_data, r1_direction in self._incident_edges(
+                brain, n_uuid
+            ):
+                if (
+                    predicate_uuid is not None
+                    and (r1_data.get("uuid") or r1_key) != predicate_uuid
+                ):
+                    continue
+                required_flow_key = (
+                    flow_key if flow_key is not None else r1_data.get("flow_key")
+                )
+                if not required_flow_key:
+                    continue
+                for b_uuid, r2_key, r2_data, r2_direction in self._incident_edges(
+                    brain, m_uuid
+                ):
+                    if r2_key == r1_key:
+                        continue
+                    if r2_data.get("flow_key") != required_flow_key:
+                        continue
+                    yield (
+                        n_uuid,
+                        m_uuid,
+                        b_uuid,
+                        r1_data,
+                        r2_data,
+                        r1_direction,
+                        r2_direction,
+                    )
+
+
     def get_event_centric_neighbors(
         self,
         nodes: list[Node | str],
