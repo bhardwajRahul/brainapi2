@@ -10,7 +10,8 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import asyncio
 import json
-from typing import Optional
+import threading
+from typing import Any, Optional
 
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
@@ -18,6 +19,7 @@ from starlette.responses import JSONResponse
 from src.constants.embeddings import Vector
 from src.constants.kg import IdentificationParams, Node, Predicate
 from src.core.search.entities import search_entities
+from src.core.search.entity_info import EventSynergyRetriever, MatchPath
 from src.core.search.relationships import search_relationships
 from src.utils.vector_search import VectorSearchFacade
 from src.services.api.constants.requests import (
@@ -35,6 +37,10 @@ from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 
 vector_search = VectorSearchFacade(vector_store_adapter)
+
+_MAX_NOUN_CHUNKS = 5
+_MAX_DOSSIER_ENTITIES = 5
+_DOSSIER_MAX_DEPTH = 3
 
 
 async def retrieve_data(
@@ -381,6 +387,115 @@ async def get_entities(
     )
 
 
+def _format_kg_item(item: Any) -> str:
+    name = getattr(item, "name", None) or ""
+    description = getattr(item, "description", None) or ""
+    happened_at = getattr(item, "happened_at", None) or ""
+    base = f"{name}: {description}" if description else name
+    if happened_at:
+        return f"{base} @{happened_at}"
+    return base
+
+
+def _format_event_fact(n: Node, r: Predicate, m: Node, r2: Predicate, b: Node) -> str:
+    return " | ".join(_format_kg_item(item) for item in (n, r, m, r2, b))
+
+
+def _fact_key(r: Predicate, r2: Predicate) -> tuple[str, str]:
+    return (getattr(r, "uuid", None) or "", getattr(r2, "uuid", None) or "")
+
+
+def _collect_query_variants(text: str, elements) -> list[str]:
+    seen: set[str] = set()
+    variants: list[str] = []
+
+    def _add(value: str | None) -> None:
+        if not value:
+            return
+        cleaned = value.strip()
+        if not cleaned:
+            return
+        key = cleaned.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append(cleaned)
+
+    _add(text)
+    for token in getattr(elements, "tokens", None) or []:
+        if isinstance(token, dict):
+            _add(token.get("text"))
+    noun_chunks = getattr(elements, "noun_chunks", None) or []
+    added_chunks = 0
+    for chunk in noun_chunks:
+        if added_chunks >= _MAX_NOUN_CHUNKS:
+            break
+        before = len(variants)
+        _add(chunk if isinstance(chunk, str) else None)
+        if len(variants) > before:
+            added_chunks += 1
+    return variants
+
+
+def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str]]:
+    """Return (node_uuid, distance, entity_name) seeds from nodes + relationships."""
+    text_embeddings = embeddings_adapter.embed_text(text)
+    embeddings = text_embeddings.embeddings
+    seeds: list[tuple[str, float, str]] = []
+
+    node_vectors = vector_search.search_nodes(
+        embeddings,
+        brain_id=brain_id,
+    )
+    for vector in node_vectors:
+        meta = vector.metadata or {}
+        uuid = meta.get("uuid")
+        if not uuid:
+            continue
+        distance = (
+            vector.distance if vector.distance is not None else float("inf")
+        )
+        name = meta.get("name") or text
+        seeds.append((uuid, float(distance), str(name)))
+
+    rel_vectors = vector_search.search_relationships(
+        embeddings,
+        brain_id=brain_id,
+    )
+    for vector in rel_vectors:
+        meta = vector.metadata or {}
+        distance = (
+            vector.distance if vector.distance is not None else float("inf")
+        )
+        node_ids = meta.get("node_ids") or []
+        for node_id in node_ids:
+            if node_id:
+                seeds.append((str(node_id), float(distance), text))
+
+    return seeds
+
+
+def _flatten_match_path(path: MatchPath) -> list[str]:
+    lines: list[str] = []
+    current: MatchPath | None = path
+    while current is not None:
+        predicate, node = current.path
+        if node is None and not getattr(predicate, "name", None):
+            break
+        parts = []
+        if predicate and getattr(predicate, "name", None):
+            parts.append(_format_kg_item(predicate))
+        if node is not None:
+            parts.append(_format_kg_item(node))
+        if parts:
+            lines.append(" -> ".join(parts))
+        if current.children:
+            current = current.children[0]
+        else:
+            current = None
+    return lines
+
+
 async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     """
     Retrieve contextual information for a text.
@@ -394,57 +509,66 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
         GetContextResponse: Response containing the context information.
     """
 
-    embeddings_map = {}
-    futures = []
-
     elements = _entity_extractor.extract_elements(request.text)
-    relationships = []
-    historical_context = []
-    text_context = ""
+    variants = _collect_query_variants(request.text, elements)
+    historical_context: list[str] = []
+    candidate_lock = threading.Lock()
+    candidates: list[dict[str, Any]] = []
+    seed_hits: list[tuple[str, float, str]] = []
 
-    def _find_vs_nodes(text: str):
-        nonlocal text_context, relationships
-        if text in embeddings_map:
-            return embeddings_map[text]
-        text_embeddings = embeddings_adapter.embed_text(text)
-        data_vectors = vector_search.search_nodes(
-            text_embeddings.embeddings,
-            brain_id=request.brain_id,
-        )
+    def _collect_facts_for_variant(text: str) -> None:
+        seeds = _seed_nodes_for_text(text, request.brain_id)
+        if not seeds:
+            return
+        with candidate_lock:
+            seed_hits.extend(seeds)
+        uuid_to_distance: dict[str, float] = {}
+        for uuid, distance, _ in seeds:
+            prev = uuid_to_distance.get(uuid)
+            if prev is None or distance < prev:
+                uuid_to_distance[uuid] = distance
+        seed_uuids = list(uuid_to_distance.keys())
         neighbors = graph_adapter.get_event_centric_neighbors(
-            [v.metadata.get("uuid") for v in data_vectors], brain_id=request.brain_id
+            seed_uuids, brain_id=request.brain_id
         )
-        if len(neighbors) > 0:
-            for n, r, m, r2, b in neighbors:
-                embeddings_map[text] = (text, n, r, m, r2, b)
-                relationships.append((text, n, r, m, r2, b))
-                text_context += (
-                    "\n".join(
-                        f"{item.name}: {item.description}" for item in (n, r, m, r2, b)
-                    )
-                    + "\n"
+        local: list[dict[str, Any]] = []
+        for n, r, m, r2, b in neighbors:
+            distances = [
+                uuid_to_distance[u]
+                for u in (
+                    getattr(n, "uuid", None),
+                    getattr(m, "uuid", None),
+                    getattr(b, "uuid", None),
                 )
-                return GetContextTriple(identified_entity=text, triple=(n, r, m, r2, b))
-        return ()
+                if u in uuid_to_distance
+            ]
+            score = min(distances) if distances else float("inf")
+            local.append(
+                {
+                    "identified_entity": text,
+                    "triple": (n, r, m, r2, b),
+                    "score": score,
+                    "key": _fact_key(r, r2),
+                }
+            )
+        if local:
+            with candidate_lock:
+                candidates.extend(local)
 
     async def _get_historical_context():
         nonlocal historical_context
-        _futures = []
-        _futures.append(
+        text_chunks, structured_data = await asyncio.gather(
             asyncio.to_thread(
                 data_adapter.get_last_text_chunks,
                 brain_id=request.brain_id,
                 limit=request.historical_limit,
-            )
-        )
-        _futures.append(
+            ),
             asyncio.to_thread(
                 data_adapter.get_last_structured_data,
                 brain_id=request.brain_id,
                 limit=request.historical_limit,
-            )
+            ),
         )
-        text_chunks, structured_data = await asyncio.gather(*_futures)
         historical_context = [text_chunk.text for text_chunk in text_chunks] + [
             json.dumps(structured_data.data)
             for structured_data in structured_data
@@ -452,21 +576,82 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
         ]
         return historical_context
 
-    futures.append(asyncio.to_thread(_find_vs_nodes, request.text))
-    for chunk in elements.tokens:
-        futures.append(asyncio.to_thread(_find_vs_nodes, chunk["text"]))
+    futures = [
+        asyncio.to_thread(_collect_facts_for_variant, variant) for variant in variants
+    ]
     futures.append(_get_historical_context())
-
     await asyncio.gather(*futures)
+
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        key = candidate["key"]
+        existing = deduped.get(key)
+        if existing is None or candidate["score"] < existing["score"]:
+            deduped[key] = candidate
+
+    ranked = sorted(deduped.values(), key=lambda c: c["score"])
+    max_facts = max(1, int(getattr(request, "max_facts", 40) or 40))
+    curated = ranked[:max_facts]
+
+    text_lines: list[str] = []
+    triples: list[GetContextTriple] = []
+    for candidate in curated:
+        n, r, m, r2, b = candidate["triple"]
+        text_lines.append(_format_event_fact(n, r, m, r2, b))
+        triples.append(
+            GetContextTriple(
+                identified_entity=candidate["identified_entity"],
+                triple=(n, r, m, r2, b),
+            )
+        )
+
+    entity_scores: dict[str, float] = {}
+    for _uuid, distance, entity_name in seed_hits:
+        name = (entity_name or "").strip()
+        if not name:
+            continue
+        if name.lower() == request.text.strip().lower():
+            continue
+        prev = entity_scores.get(name)
+        if prev is None or distance < prev:
+            entity_scores[name] = distance
+    top_entities = [
+        name
+        for name, _ in sorted(entity_scores.items(), key=lambda item: item[1])[
+            :_MAX_DOSSIER_ENTITIES
+        ]
+    ]
+
+    dossier_lines: list[str] = []
+    if top_entities:
+
+        def _run_dossiers() -> list[str]:
+            lines: list[str] = []
+            retriever = EventSynergyRetriever(request.brain_id)
+            for entity_name in top_entities:
+                try:
+                    path = retriever.retrieve_matches(
+                        entity_name,
+                        request.text,
+                        max_depth=_DOSSIER_MAX_DEPTH,
+                    )
+                except Exception:
+                    continue
+                if path is None or path.target_node is None:
+                    continue
+                flattened = _flatten_match_path(path)
+                if not flattened:
+                    continue
+                target_name = getattr(path.target_node, "name", None) or entity_name
+                lines.append(f"[dossier:{target_name}] " + " | ".join(flattened))
+            return lines
+
+        dossier_lines = await asyncio.to_thread(_run_dossiers)
+
+    text_context = "\n".join(text_lines + dossier_lines)
 
     return GetContextResponse(
         text_context=text_context,
-        triples=[
-            GetContextTriple(
-                identified_entity=t[0],
-                triple=(t[1], t[2], t[3], t[4], t[5]),
-            )
-            for t in relationships
-        ],
+        triples=triples,
         historical_context=historical_context,
     )

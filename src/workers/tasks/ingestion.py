@@ -864,6 +864,10 @@ def process_architect_relationships(self, args: dict):
                 if len(item_errors) < len(relationships_data)
                 else "failed"
             )
+            print(
+                f"[!] Relationship persistence failures ({len(item_errors)}): "
+                f"{item_errors}"
+            )
             set_ingestion_task_status(
                 status_task_id,
                 brain_id,

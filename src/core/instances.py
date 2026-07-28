@@ -126,12 +126,17 @@ elif config.data_db == "postgresql":
     data_adapter = DataAdapter()
     data_adapter.add_client(get_postgresql_data_client())
 
-from src.lib.embeddings.client_small import _embeddings_small_client
-
 _embeddings_primary = EmbeddingsAdapter()
 _embeddings_primary.add_client(_build_embeddings(config.embeddings_provider))
 _embeddings_small = EmbeddingsAdapter()
-_embeddings_small.add_client(_embeddings_small_client)
+if config.models_mode == "remote":
+    # Keep remote mode free of local torch/sentence-transformers.
+    # Architect similarity checks still work as long as both sides share a space.
+    _embeddings_small.add_client(_build_embeddings(config.embeddings_provider))
+else:
+    from src.lib.embeddings.client_small import _embeddings_small_client
+
+    _embeddings_small.add_client(_embeddings_small_client)
 
 embeddings_adapter = _embeddings_primary
 embeddings_small_adapter = _embeddings_small

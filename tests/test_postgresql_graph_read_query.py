@@ -106,6 +106,60 @@ class ValidateReadOnlySqlTests(unittest.TestCase):
         with self.assertRaises(ReadQueryValidationError):
             validate_read_only_sql("UPDATE kg_nodes SET data = '{}'")
 
+    def test_rejects_cypher_match(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql(
+                "MATCH (n:PERSON) WHERE n.uuid = 'abc' RETURN n"
+            )
+        self.assertIn("Cypher", str(ctx.exception))
+
+    def test_rejects_explain_cypher(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql(
+                "EXPLAIN MATCH (n) RETURN n.uuid AS uuid LIMIT 50"
+            )
+        self.assertIn("Cypher", str(ctx.exception))
+
+    def test_rejects_legacy_nodes_table(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql("SELECT COUNT(*) AS total FROM nodes")
+        self.assertIn("kg_nodes", str(ctx.exception))
+
+    def test_rejects_table_nodes_shorthand(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql("TABLE nodes")
+        self.assertIn("kg_nodes", str(ctx.exception))
+
+    def test_rejects_incomplete_with_recursive_unbalanced_parens(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql(
+                "WITH RECURSIVE walk AS ("
+                "SELECT source_uuid, target_uuid, rel_type, 1 AS depth "
+                "FROM kg_relationships WHERE source_uuid = 'abc'"
+            )
+        self.assertIn("Incomplete SQL", str(ctx.exception))
+
+    def test_rejects_recursive_cte_fragment_without_outer_select(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql(
+                "WITH RECURSIVE walk AS ("
+                "SELECT source_uuid, target_uuid, rel_type, 1 AS depth "
+                "FROM kg_relationships WHERE source_uuid = 'abc')"
+            )
+        msg = str(ctx.exception)
+        self.assertTrue(
+            "Incomplete WITH RECURSIVE" in msg or "Incomplete SQL" in msg
+        )
+
+    def test_rejects_orphaned_union_all_branch(self):
+        with self.assertRaises(ReadQueryValidationError) as ctx:
+            validate_read_only_sql(
+                "SELECT r.source_uuid, r.target_uuid, r.rel_type, w.depth + 1 "
+                "FROM walk w JOIN kg_relationships r ON r.source_uuid = w.target_uuid "
+                "WHERE w.depth < 3) SELECT DISTINCT w.source_uuid FROM walk w LIMIT 50"
+            )
+        self.assertIn("Incomplete SQL", str(ctx.exception))
+
 
 class ExecuteReadQueryTests(unittest.TestCase):
     @unittest.skipIf(PostgreSQLGraphStore is None, "postgresql dependencies unavailable")

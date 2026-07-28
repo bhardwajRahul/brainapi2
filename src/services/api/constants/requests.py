@@ -393,6 +393,7 @@ class GetContextRequestBody(BaseModel):
     text: str
     brain_id: str = "default"
     historical_limit: int = 10
+    max_facts: int = 40
 
 
 class GetContextTriple(BaseModel):

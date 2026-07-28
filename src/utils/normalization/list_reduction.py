@@ -12,11 +12,6 @@ from typing import List, Optional, TypeVar
 from src.utils.similarity.vectors import cosine_similarity
 from pydantic import BaseModel
 
-try:
-    from src.lib.embeddings.client_small import EmbeddingsClientSmall
-except ModuleNotFoundError:
-    EmbeddingsClientSmall = None
-
 T = TypeVar("T")
 
 
@@ -70,10 +65,22 @@ def _fallback_embed_text(text: str) -> list[float]:
     return [value / divisor for value in buckets]
 
 
+def _resolve_embeddings_client():
+    try:
+        from src.core.instances import embeddings_small_adapter
+
+        return embeddings_small_adapter
+    except Exception:
+        return None
+
+
 def _embed_text(embeddings_client, text: str) -> list[float]:
     if embeddings_client is None:
         return _fallback_embed_text(text)
-    return embeddings_client.embed_text(text)
+    result = embeddings_client.embed_text(text)
+    if hasattr(result, "embeddings"):
+        return list(result.embeddings)
+    return list(result)
 
 
 def reduce_list(
@@ -95,7 +102,7 @@ def reduce_list(
     if not list_:
         return []
 
-    embeddings_client = EmbeddingsClientSmall() if EmbeddingsClientSmall else None
+    embeddings_client = _resolve_embeddings_client()
     reduced_list = []
     item_embeddings = []
 

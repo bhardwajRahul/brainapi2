@@ -30,6 +30,10 @@ brainapi doctor  # check Python, Docker, Ollama, and configured services
 | `brainapi plugins install <name>` | Install a plugin from the registry (e.g. `brainapi plugins install chatbot`).          |
 | `brainapi plugins list`           | List installed plugins (`--remote` to browse the registry).                            |
 | `brainapi plugins uninstall <name>` | Remove an installed plugin.                                                          |
+| `brainapi reset` | Purge Celery queues and/or wipe Redis + Postgres brain state (interactive). |
+| `brainapi reset --brain <id> -y` | Wipe one brain's Redis keys and DROP its `brain_*` Postgres database. |
+| `brainapi reset --all -y` | Redis `FLUSHDB` + DROP all `brain_*` databases + clear `data_brains`. |
+| `brainapi reset --queues-only -y` | Purge Celery queue keys only. |
 
 ### `brainapi start` options
 

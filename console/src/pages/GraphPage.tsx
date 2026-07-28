@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import GraphCanvas from "../components/GraphCanvas";
-import { apiFetch } from "../lib/api";
+import { apiFetch, getSession } from "../lib/api";
 import { colorForLabel, primaryLabel } from "../lib/graphColors";
 import {
   filterRelationshipsByEntities,
@@ -87,6 +87,7 @@ export default function GraphPage() {
   const [error, setError] = useState<string | null>(null);
   const [physics, setPhysics] = useState(true);
   const [activeFilters, setActiveFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
+  const activeBrainId = getSession()?.brainId ?? "default";
 
   const loadGraph = useCallback(async (filters: GraphFilters) => {
     setLoading(true);
@@ -244,6 +245,7 @@ export default function GraphPage() {
         <div className="mr-2">
           <h1 className="text-2xl font-semibold">Graph Explorer</h1>
           <p className="text-xs text-slate-500">
+            Brain <span className="text-cyan-600">{activeBrainId}</span> ·{" "}
             {entities.length} nodes · {edges.length} edges · {relationships.length}{" "}
             relationships loaded · double-click to expand
           </p>
@@ -319,10 +321,19 @@ export default function GraphPage() {
               Loading graph…
             </div>
           ) : entities.length === 0 ? (
-            <div className="flex h-full items-center justify-center bg-[#1a1d23] text-slate-500">
-              {hasActiveFilters
-                ? "No matches — try a different label or search term"
-                : "No nodes — ingest data or change filters"}
+            <div className="flex h-full flex-col items-center justify-center gap-2 bg-[#1a1d23] px-6 text-center text-slate-500">
+              <p>
+                {hasActiveFilters
+                  ? "No matches — try a different label or search term"
+                  : "No nodes in this brain"}
+              </p>
+              <p className="max-w-md text-xs text-slate-600">
+                Active brain:{" "}
+                <span className="text-cyan-700">{activeBrainId}</span>
+                {activeBrainId === "default"
+                  ? ". System PAT defaults to default — switch to locomoconv26 (or your ingest brain) in the sidebar."
+                  : ". If you expected data here, confirm ingest used this same brain id."}
+              </p>
             </div>
           ) : (
             <GraphCanvas

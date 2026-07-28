@@ -25,6 +25,9 @@ from src.utils.similarity.vectors import cosine_similarity
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
+_BRANCH_FACTOR = 3
+_MAX_EXPLORATION_WORK = 50
+
 
 # ================================================================
 # NOTE Currently not fully supported by the Event-Centric v2 kg
@@ -51,52 +54,22 @@ class EventSynergyRetriever:
         self.memory_id = memory_id
         self.brain_id = memory_id
 
-    def _recursive_explorer(
+    def _score_neighbors(
         self,
         current_node_id: str,
         query_embedding: List[float],
-        depth: int,
-        visited_ids: Set[str],
-        most_similar_conn_rel_tuple: Optional[
-            Tuple[Tuple[Predicate, Node], float]
-        ] = None,
-    ):
-        # -> List[SynergyPath]:
-        """
-        Traverse graph neighbors from the given node to locate the connection path most similar to the provided query embedding, searching up to the specified depth.
-        
-        Parameters:
-            current_node_id (str): UUID of the node to start exploration from.
-            query_embedding (List[float]): Embedding vector representing the query used to score neighbor relations.
-            depth (int): Remaining recursion depth; exploration stops when depth <= 0.
-            visited_ids (Set[str]): Set of visited node UUIDs; this set is mutated to include nodes visited during traversal to avoid cycles.
-            most_similar_conn_rel_tuple (Optional[Tuple[Tuple[Predicate, Node], float]]): Optional running best match (relation tuple and its similarity) to carry forward during recursion.
-        
-        Returns:
-            results (List[Tuple[Tuple[Predicate, Node], float]]): A list containing the most similar (predicate, node) tuple paired with its similarity score found along the explored path, or an empty list if no suitable connections are found.
-        """
-        if depth <= 0:
-            return []
-
-        if current_node_id in visited_ids:
-            return []
-
-        visited_ids.add(current_node_id)
-
+    ) -> List[Tuple[Tuple[Predicate, Node], float]]:
         neighbors = graph_adapter.get_neighbors(
             [current_node_id], brain_id=self.brain_id
         )
-
         if not neighbors or current_node_id not in neighbors:
             return []
 
         conn_rels: List[Tuple[Predicate, Node]] = neighbors[current_node_id]
-
-        conn_rels_w_embeddings: List[Tuple[Tuple[Predicate, Node], List[float]]] = []
-
+        scored: List[Tuple[Tuple[Predicate, Node], float]] = []
         for rel_tuple in conn_rels:
             cr = rel_tuple[0]
-            v_id = cr.properties.get("v_id")
+            v_id = cr.properties.get("v_id") if cr.properties else None
             if v_id is None:
                 continue
             cr_vs = vector_store_adapter.get_by_ids(
@@ -104,51 +77,77 @@ class EventSynergyRetriever:
                 store="relationships",
                 brain_id=self.brain_id,
             )
-            if cr_vs:
-                conn_rels_w_embeddings.append((rel_tuple, cr_vs[0].embeddings))
-        if not conn_rels_w_embeddings:
+            if not cr_vs or not getattr(cr_vs[0], "embeddings", None):
+                continue
+            scored.append(
+                (rel_tuple, cosine_similarity(cr_vs[0].embeddings, query_embedding))
+            )
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return scored
+
+    def _recursive_explorer(
+        self,
+        current_node_id: str,
+        query_embedding: List[float],
+        depth: int,
+        visited_ids: Set[str],
+        work_counter: Optional[List[int]] = None,
+        branch_factor: int = _BRANCH_FACTOR,
+    ) -> List[Tuple[Tuple[Predicate, Node], float]]:
+        """
+        Traverse graph neighbors from the given node to locate the connection path most similar to the provided query embedding, searching up to the specified depth.
+        
+        Parameters:
+            current_node_id (str): UUID of the node to start exploration from.
+            query_embedding (List[float]): Embedding vector representing the query used to score neighbor relations.
+            depth (int): Remaining recursion depth; exploration stops when depth <= 0.
+            visited_ids (Set[str]): Set of visited node UUIDs used to avoid cycles on the current path.
+            work_counter (Optional[List[int]]): Mutable single-element list tracking explored nodes; stops when cap is reached.
+            branch_factor (int): Number of top-scoring neighbors to expand at each hop.
+        
+        Returns:
+            results (List[Tuple[Tuple[Predicate, Node], float]]): Best path as an ordered list of (relation tuple, similarity) hops from the start node, or an empty list if no suitable connections are found.
+        """
+        if work_counter is None:
+            work_counter = [0]
+
+        if depth <= 0 or work_counter[0] >= _MAX_EXPLORATION_WORK:
             return []
 
-        conn_rels_similarities: List[Tuple[Tuple[Predicate, Node], float]] = [
-            (rel_tuple, cosine_similarity(cr_embedding, query_embedding))
-            for rel_tuple, cr_embedding in conn_rels_w_embeddings
-        ]
-
-        conn_rels_similarities_sorted = sorted(
-            conn_rels_similarities, key=lambda x: x[1], reverse=True
-        )
-
-        if not conn_rels_similarities_sorted:
+        if current_node_id in visited_ids:
             return []
 
-        current_best = conn_rels_similarities_sorted[0]
+        visited_ids.add(current_node_id)
+        work_counter[0] += 1
 
-        predicate, node = current_best[0]
-        if not node or not predicate:
+        scored = self._score_neighbors(current_node_id, query_embedding)
+        if not scored:
             return []
 
-        if (
-            most_similar_conn_rel_tuple is None
-            or current_best[1] > most_similar_conn_rel_tuple[1]
-        ):
-            most_similar_conn_rel_tuple = current_best
+        best_path: List[Tuple[Tuple[Predicate, Node], float]] = []
+        best_score = float("-inf")
 
-        next_node = current_best[0][1]
-        if not next_node or not next_node.uuid:
-            return [most_similar_conn_rel_tuple] if most_similar_conn_rel_tuple else []
+        for rel_tuple, similarity in scored[: max(1, branch_factor)]:
+            predicate, node = rel_tuple
+            if not node or not predicate or not node.uuid:
+                continue
 
-        results = self._recursive_explorer(
-            next_node.uuid,
-            query_embedding,
-            depth - 1,
-            visited_ids,
-            most_similar_conn_rel_tuple,
-        )
+            hop = (rel_tuple, similarity)
+            child_path = self._recursive_explorer(
+                node.uuid,
+                query_embedding,
+                depth - 1,
+                visited_ids.copy(),
+                work_counter,
+                branch_factor=branch_factor,
+            )
+            candidate = [hop] + child_path
+            path_score = max(score for _, score in candidate)
+            if path_score > best_score:
+                best_score = path_score
+                best_path = candidate
 
-        if results:
-            return results
-        else:
-            return [most_similar_conn_rel_tuple] if most_similar_conn_rel_tuple else []
+        return best_path
 
     def retrieve_matches(
         self, target: str, query: str, max_depth: int = 3
@@ -206,6 +205,7 @@ class EventSynergyRetriever:
             query_embedding.embeddings,
             depth=max_depth,
             visited_ids=set(),
+            work_counter=[0],
         )
 
         if not synergy_paths:
@@ -215,8 +215,6 @@ class EventSynergyRetriever:
                 similarity=0.0,
                 children=[],
             )
-
-        synergy_paths = list(reversed(synergy_paths))
 
         match_paths = []
         for path_tuple, similarity in synergy_paths:

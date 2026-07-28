@@ -6,10 +6,19 @@ import { runConfig } from "./commands/config.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runUpdate } from "./commands/update.js";
 import { runPlugins, type PluginsOptions, type PluginsSubcommand } from "./commands/plugins.js";
+import { runReset, type ResetCommandOptions } from "./commands/reset.js";
 import { readState } from "./lib/state.js";
 import { isPipelineMode, type PipelineMode } from "./types.js";
 
-type Command = "init" | "start" | "config" | "doctor" | "update" | "plugins" | "help";
+type Command =
+  | "init"
+  | "start"
+  | "config"
+  | "doctor"
+  | "update"
+  | "plugins"
+  | "reset"
+  | "help";
 
 interface ParsedArgs {
   command: Command;
@@ -24,6 +33,7 @@ interface ParsedArgs {
   pipeline?: PipelineMode;
   invalidPipeline?: string;
   plugins?: PluginsOptions;
+  reset?: ResetCommandOptions;
   unknown: string[];
 }
 
@@ -94,11 +104,30 @@ function parseArgs(argv: string[]): ParsedArgs {
         case "doctor":
         case "update":
         case "plugins":
+        case "reset":
         case "help":
           out.command = arg;
           break;
         default:
           unknown.push(arg);
+      }
+    } else if (out.command === "reset") {
+      if (!out.reset) out.reset = {};
+      const reset = out.reset;
+      if (arg === "--brain") {
+        reset.brain = args.shift();
+      } else if (arg === "--all") {
+        reset.all = true;
+      } else if (arg === "--queues-only") {
+        reset.queuesOnly = true;
+      } else if (arg === "--redis-only") {
+        reset.redisOnly = true;
+      } else if (arg === "--db-only") {
+        reset.dbOnly = true;
+      } else if (arg === "--yes" || arg === "-y") {
+        reset.yes = true;
+      } else {
+        unknown.push(arg);
       }
     } else if (out.command === "plugins") {
       if (!out.plugins) out.plugins = {};
@@ -143,6 +172,7 @@ function printHelp(): void {
     "  doctor             Check Python, Docker, Ollama, GCP credentials, services",
     "  update             Fetch latest source + reinstall Python dependencies",
     "  plugins <cmd>      Manage plugins (install, uninstall, list, info, update)",
+    "  reset [...]        Purge Celery queues and/or wipe Redis + Postgres brain state",
     "  help               Show this message",
     "",
     pc.bold("Options:"),
@@ -155,6 +185,12 @@ function printHelp(): void {
     "      --no-worker            For 'start': skip the celery worker",
     "      --only api,mcp,worker  For 'start': run only the listed processes (shortcut)",
     "      --pipeline accurate|lightweight   Set PIPELINE_MODE in ~/.brainapi/source/.env before start",
+    "      --brain <id>           For 'reset': wipe one brain (Redis keys + DROP brain_* DB)",
+    "      --all                  For 'reset': Redis FLUSHDB + DROP all brain_* databases",
+    "      --queues-only          For 'reset': purge Celery queue keys only",
+    "      --redis-only           For 'reset': skip Postgres",
+    "      --db-only              For 'reset': skip Redis",
+    "  -y, --yes                  For 'reset': skip confirmation prompt",
     "  -v, --version              Print the CLI version",
     "  -h, --help                 Show this message",
     "",
@@ -244,6 +280,9 @@ async function main(): Promise<void> {
         return;
       case "plugins":
         await runPlugins(parsed.plugins ?? {});
+        return;
+      case "reset":
+        await runReset(parsed.reset ?? {});
         return;
       case "help":
         printHelp();

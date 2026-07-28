@@ -770,7 +770,6 @@ class ArchitectAgent:
 
         if mode == "granular":
             from src.core.agents.janitor_agent import JanitorAgent
-            from src.lib.neo4j.client import _neo4j_client
             from src.services.input.agents import (
                 embeddings_adapter,
                 graph_adapter,
@@ -785,7 +784,7 @@ class ArchitectAgent:
                     kg=graph_adapter,
                     vector_store=vector_store_adapter,
                     embeddings=embeddings_adapter,
-                    database_desc=_neo4j_client.graphdb_description,
+                    database_desc=graph_adapter.graphdb_description,
                 )
                 self.janitor_agent = janitor_agent
                 self._janitor_agent_brain_id = brain_id

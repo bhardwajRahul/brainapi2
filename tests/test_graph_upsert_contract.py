@@ -82,7 +82,9 @@ class NetworkXUpsertContractTests(unittest.TestCase):
         brain.upsert_node(["PERSON"], {"uuid": "a"}, {"uuid": "a", "name": "Alice"})
         brain.upsert_node(["PRODUCT"], {"uuid": "b"}, {"uuid": "b", "name": "Widget"})
         store._brains = {"brain-a": brain}
+        store._brains_lock = __import__("threading").RLock()
         store._persist_relationship = MagicMock()
+        store._persist_node = MagicMock()
 
         first = store.merge_relationship(
             "brain-a",
@@ -112,6 +114,65 @@ class NetworkXUpsertContractTests(unittest.TestCase):
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0][2], "rel-1")
         self.assertEqual(edges[0][3]["description"], "v2")
+
+    def test_relationship_upsert_creates_missing_endpoint_nodes(self):
+        from src.lib.postgresql.graph_store import PostgreSQLGraphStore
+        from src.lib.postgresql.graph_store import _BrainGraph
+
+        store = PostgreSQLGraphStore.__new__(PostgreSQLGraphStore)
+        brain = _BrainGraph("brain-a")
+        store._brains = {"brain-a": brain}
+        store._brains_lock = __import__("threading").RLock()
+        store._persist_node = MagicMock()
+        store._persist_relationship = MagicMock()
+
+        result = store.merge_relationship(
+            "brain-a",
+            ["PERSON"],
+            "Alice",
+            ["PRODUCT"],
+            "Widget",
+            "OWNS",
+            {"uuid": "rel-1", "description": "created"},
+            subject_uuid="a",
+            object_uuid="b",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(set(brain.graph.nodes), {"a", "b"})
+        self.assertEqual(len(list(brain.graph.edges(keys=True))), 1)
+        store._persist_node.assert_called()
+        store._persist_relationship.assert_called_once()
+
+    def test_normalize_read_sql_rewrites_jsonb_ilike(self):
+        from src.lib.postgresql.graph_store import normalize_read_sql
+
+        sql = (
+            "SELECT uuid, data FROM kg_nodes WHERE data->>'name' ILIKE '%Reminding%' "
+            "OR data->'description' ILIKE '%remind%' LIMIT 50"
+        )
+        fixed = normalize_read_sql(sql)
+        self.assertIn("data->>'description' ILIKE", fixed)
+        self.assertNotIn("data->'description' ILIKE", fixed)
+
+    def test_stale_cache_reloads_when_db_counts_diverge(self):
+        from src.lib.postgresql.graph_store import PostgreSQLGraphStore
+        from src.lib.postgresql.graph_store import _BrainGraph
+
+        store = PostgreSQLGraphStore.__new__(PostgreSQLGraphStore)
+        stale = _BrainGraph("brain-a")
+        store._brains = {"brain-a": stale}
+        store._brains_lock = __import__("threading").RLock()
+        store._db_graph_counts = MagicMock(return_value=(2, 1))
+
+        fresh = _BrainGraph("brain-a")
+        fresh.graph.add_node("a", name="Alice", labels=["PERSON"])
+        fresh.graph.add_node("b", name="Bob", labels=["PERSON"])
+        fresh.graph.add_edge("a", "b", key="r1", rel_type="KNOWS")
+        store._reload_brain_locked = MagicMock(return_value=fresh)
+
+        loaded = store._load_brain("brain-a")
+        self.assertIs(loaded, fresh)
+        store._reload_brain_locked.assert_called_once_with("brain-a")
 
 
 class Neo4jUpsertContractTests(unittest.TestCase):

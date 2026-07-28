@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_OPEN_POOLS = 16
 _DEFAULT_MIN_CONN = 1
-_DEFAULT_MAX_CONN = 4
+# Celery uses a threaded pool; keep enough connections for concurrent
+# brain reads/writes without blocking behind the in-memory graph lock.
+_DEFAULT_MAX_CONN = max(16, int(os.getenv("CELERY_WORKER_CONCURRENCY") or 4) * 4)
 _MAINTENANCE_FALLBACK_DB = "postgres"
 
 
@@ -191,10 +193,21 @@ def ensure_system_database() -> str:
 
 
 def list_brain_database_names() -> list[str]:
+    # LIKE '_' is a single-char wildcard; escape so prefix "brain_" is literal.
+    # Otherwise "brainapi" (system DB) matches "brain_%".
+    escaped_prefix = (
+        BRAIN_DB_PREFIX.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    system_db = _system_dbname()
     with borrow(_registry.get(_maintenance_dbname())) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT datname FROM pg_database WHERE datname LIKE %s ORDER BY datname",
-                (f"{BRAIN_DB_PREFIX}%",),
+                "SELECT datname FROM pg_database "
+                "WHERE datname LIKE %s ESCAPE %s ORDER BY datname",
+                (f"{escaped_prefix}%", "\\"),
             )
-            return [row[0] for row in cur.fetchall()]
+            return [
+                row[0]
+                for row in cur.fetchall()
+                if row[0] != system_db
+            ]

@@ -24,7 +24,6 @@ from src.services.input.agents import (
     vector_store_adapter,
 )
 from src.core.instances import llm_small_adapter as llm_adapter
-from src.lib.neo4j.client import _neo4j_client
 
 RELATIONSHIP_BATCH_SIZE = 20
 
@@ -59,7 +58,7 @@ def consolidate_graph(
             kg=graph_adapter,
             vector_store=vector_store_adapter,
             embeddings=embeddings_adapter,
-            database_desc=_neo4j_client.graphdb_description,
+            database_desc=graph_adapter.graphdb_description,
         )
 
         tasks = janitor_agent.run_graph_consolidator(
@@ -80,7 +79,7 @@ def consolidate_graph(
             kg=graph_adapter,
             vector_store=vector_store_adapter,
             embeddings=embeddings_adapter,
-            database_desc=_neo4j_client.graphdb_description,
+            database_desc=graph_adapter.graphdb_description,
         )
         for task in tasks:
             try:

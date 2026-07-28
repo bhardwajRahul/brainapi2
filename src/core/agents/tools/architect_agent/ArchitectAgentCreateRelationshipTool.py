@@ -30,7 +30,6 @@ from src.services.input.agents import (
     llm_small_adapter,
     vector_store_adapter,
 )
-from src.lib.neo4j.client import _neo4j_client
 from src.utils.cleanup import strip_properties
 from src.utils.nlp.names import levenshtein_similarity
 from src.utils.serialization.data import is_uuid
@@ -394,7 +393,7 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
                     kg=graph_adapter,
                     vector_store=vector_store_adapter,
                     embeddings=embeddings_adapter,
-                    database_desc=_neo4j_client.graphdb_description,
+                    database_desc=graph_adapter.graphdb_description,
                 )
                 self.architect_agent.janitor_agent = janitor_agent
                 self.architect_agent._janitor_agent_brain_id = self.brain_id

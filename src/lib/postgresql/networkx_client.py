@@ -53,19 +53,39 @@ class NetworkXGraphClient(GraphClient):
     @property
     def graphdb_description(self) -> str:
         return (
-            "The graph database is PostgreSQL. Use read-only SQL (SELECT or WITH ... SELECT) "
-            "as db_query; Cypher is not supported. "
-            "Tables: kg_nodes(uuid TEXT PRIMARY KEY, data JSONB) where data holds name, labels, "
+            "The graph database is PostgreSQL (NetworkX-backed). "
+            "You MUST write read-only SQL only. Cypher is NOT supported. "
+            "Never use MATCH, RETURN, labels(n), type(r), or EXPLAIN MATCH. "
+            "Never query a table named nodes or relationships — use kg_nodes and kg_relationships. "
+            "IMPORTANT: for text filters use data->>'field' (text), never data->'field' (jsonb) with ILIKE/LIKE. "
+            "Always send one complete SQL statement in a single tool call "
+            "(never split a WITH RECURSIVE CTE across multiple calls). "
+            "Tables: "
+            "kg_nodes(uuid TEXT PRIMARY KEY, data JSONB) where data holds name, labels, "
             "description and other node properties; "
             "kg_relationships(uuid TEXT PRIMARY KEY, rel_type TEXT, source_uuid TEXT, "
             "target_uuid TEXT, data JSONB). "
-            "Filter nodes by label with data->'labels' ? 'PERSON', by name with data->>'name' ILIKE '%alice%'. "
-            "Multi-hop traversal example: WITH RECURSIVE walk AS ("
-            "SELECT source_uuid, target_uuid, rel_type, 1 AS depth FROM kg_relationships "
-            "WHERE source_uuid = '<uuid>' "
-            "UNION ALL SELECT r.source_uuid, r.target_uuid, r.rel_type, w.depth + 1 "
+            "Examples: "
+            "SELECT COUNT(*) AS total FROM kg_nodes; "
+            "SELECT uuid, data->>'name' AS name, data->'labels' AS labels FROM kg_nodes "
+            "WHERE data->>'name' ILIKE '%Counsel%' OR data->>'description' ILIKE '%Mental Health%' LIMIT 50; "
+            "SELECT uuid, data FROM kg_nodes WHERE uuid = '<uuid>'; "
+            "SELECT n.uuid, n.data->>'name' AS name, r.rel_type, m.uuid AS target_uuid, "
+            "m.data->>'name' AS target_name, m.data->'labels' AS target_labels "
+            "FROM kg_relationships r "
+            "JOIN kg_nodes n ON n.uuid = r.source_uuid "
+            "JOIN kg_nodes m ON m.uuid = r.target_uuid "
+            "WHERE n.uuid = '<uuid>'; "
+            "Filter nodes by label with data->'labels' ? 'PERSON'. "
+            "Prefer 1-hop joins first. For multi-hop use this single complete statement: "
+            "WITH RECURSIVE walk AS ("
+            "SELECT source_uuid, target_uuid, rel_type, 1 AS depth "
+            "FROM kg_relationships WHERE source_uuid = '<uuid>' "
+            "UNION ALL "
+            "SELECT r.source_uuid, r.target_uuid, r.rel_type, w.depth + 1 "
             "FROM walk w JOIN kg_relationships r ON r.source_uuid = w.target_uuid "
-            "WHERE w.depth < 3) SELECT * FROM walk LIMIT 50. "
+            "WHERE w.depth < 3"
+            ") SELECT * FROM walk LIMIT 50; "
             "Only read queries are allowed; results are capped at 100 rows."
         )
 
@@ -951,6 +971,101 @@ class NetworkXGraphClient(GraphClient):
         return neighbors
 
 
+    def _node_from_brain(self, brain, uuid: str) -> Node:
+        data = brain.node_data(uuid) if uuid in brain.graph else {}
+        node_kwargs: Dict[str, Any] = {
+            "uuid": uuid,
+            "name": data.get("name", "") or "",
+            "labels": data.get("labels", []) or [],
+            "description": data.get("description", "") or "",
+            "properties": always_dict(data),
+            "polarity": data.get("polarity", "neutral") or "neutral",
+            "metadata": always_dict(data.get("metadata", {})),
+            "happened_at": data.get("happened_at", "") or "",
+            "observations": data.get("observations", []) or [],
+        }
+        last_updated = data.get("last_updated")
+        if last_updated:
+            node_kwargs["last_updated"] = last_updated
+        return Node(**node_kwargs)
+
+
+    def _predicate_from_edge(self, edge_data: dict, direction: str) -> Predicate:
+        edge_data = always_dict(edge_data)
+        predicate_kwargs: Dict[str, Any] = {
+            "uuid": edge_data.get("uuid", "") or "",
+            "name": edge_data.get("rel_type", "") or edge_data.get("name", "") or "",
+            "description": edge_data.get("description", "") or "",
+            "direction": direction,
+            "properties": always_dict(edge_data),
+            "flow_key": edge_data.get("flow_key", "") or "",
+            "observations": edge_data.get("observations", []) or [],
+            "amount": edge_data.get("amount"),
+        }
+        last_updated = edge_data.get("last_updated")
+        if last_updated:
+            predicate_kwargs["last_updated"] = last_updated
+        return Predicate(**predicate_kwargs)
+
+
+    def _incident_edges(
+        self, brain, node_uuid: str
+    ) -> List[Tuple[str, str, dict, str]]:
+        if node_uuid not in brain.graph:
+            return []
+        edges: List[Tuple[str, str, dict, str]] = []
+        for _, neighbor, key, data in brain.graph.out_edges(
+            node_uuid, keys=True, data=True
+        ):
+            edges.append((neighbor, key, dict(data), "out"))
+        for neighbor, _, key, data in brain.graph.in_edges(
+            node_uuid, keys=True, data=True
+        ):
+            edges.append((neighbor, key, dict(data), "in"))
+        return edges
+
+
+    def _event_path_records(
+        self,
+        brain,
+        node_uuids: list[str],
+        predicate_uuid: Optional[str] = None,
+        flow_key: Optional[str] = None,
+    ):
+        for n_uuid in node_uuids:
+            if n_uuid not in brain.graph:
+                continue
+            for m_uuid, r1_key, r1_data, r1_direction in self._incident_edges(
+                brain, n_uuid
+            ):
+                if (
+                    predicate_uuid is not None
+                    and (r1_data.get("uuid") or r1_key) != predicate_uuid
+                ):
+                    continue
+                required_flow_key = (
+                    flow_key if flow_key is not None else r1_data.get("flow_key")
+                )
+                if not required_flow_key:
+                    continue
+                for b_uuid, r2_key, r2_data, r2_direction in self._incident_edges(
+                    brain, m_uuid
+                ):
+                    if r2_key == r1_key:
+                        continue
+                    if r2_data.get("flow_key") != required_flow_key:
+                        continue
+                    yield (
+                        n_uuid,
+                        m_uuid,
+                        b_uuid,
+                        r1_data,
+                        r2_data,
+                        r1_direction,
+                        r2_direction,
+                    )
+
+
     def get_event_centric_neighbors(
         self,
         nodes: list[Node | str],
@@ -962,9 +1077,7 @@ class NetworkXGraphClient(GraphClient):
         self._store.ensure_database(brain_id)
         brain = self._store.get_brain(brain_id)
         results = []
-        for n_uuid, m_uuid, b_uuid, r1_data, r2_data, _, _ in self._event_path_records(brain, node_uuids):
-            r_direction = "out"
-            r2_direction = "out"
+        for n_uuid, m_uuid, b_uuid, r1_data, r2_data, r_direction, r2_direction in self._event_path_records(brain, node_uuids):
             results.append(
                 (
                     self._node_from_brain(brain, n_uuid),

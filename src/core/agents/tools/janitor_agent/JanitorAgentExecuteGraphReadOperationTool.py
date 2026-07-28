@@ -93,8 +93,7 @@ class JanitorAgentExecuteGraphReadOperationTool(BaseTool):
             "Use this tool for ad-hoc graph reads when search_entities is not enough. "
             "The query should be a valid graph read only operation depending on the graph database type. "
             "{database_desc}. "
-            "For UNION queries, every branch must RETURN the same column aliases "
-            "(e.g. RETURN n.uuid AS uuid, n.name AS name). "
+            "For UNION queries, every branch must select the same column aliases. "
             "If you get an error, try again after fixing your query and don't give up. "
             "If you get a result, return the result as a JSON object."
         )

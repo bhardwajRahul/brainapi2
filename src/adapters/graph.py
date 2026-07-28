@@ -8,6 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
+import re
 from abc import ABC, abstractmethod
 from typing import Dict, List, Literal, Optional, Tuple
 from src.adapters.interfaces.graph import GraphClient, PredicateWithFlowKey
@@ -126,8 +127,17 @@ class GraphAdapter:
             result = self.graph.execute_operation(operation, brain_id)
             return serialize_graph_operation_result(result)
         except Exception as e:  # pylint: disable=broad-exception-caught
+            hint = ""
+            backend = getattr(self.graph, "graphdb_type", "") or ""
+            if "postgresql" in backend and re.search(
+                r"\bMATCH\b|\bRETURN\b|\bFROM\s+nodes\b", operation or "", re.I
+            ):
+                hint = (
+                    " Hint: this backend expects SQL on kg_nodes/kg_relationships, "
+                    "not Cypher and not a table named nodes."
+                )
             print(f"Error executing graph operation: {e} - {operation}")
-            return f"Error executing graph operation: {e}"
+            return f"Error executing graph operation: {e}.{hint}"
 
     def add_nodes(
         self,

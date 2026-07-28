@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,17 @@ class GraphDatabaseError(Exception):
     def __init__(self, message: str, code: Optional[str] = None):
         super().__init__(message)
         self.code = code
+
+
+# Agents often write data->'field' ILIKE ..., which fails because -> returns jsonb.
+_JSONB_ILIKE_RE = re.compile(
+    r"\bdata\s*->\s*'([^']+)'\s+(ILIKE|LIKE)\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_read_sql(sql: str) -> str:
+    return _JSONB_ILIKE_RE.sub(r"data->>'\1' \2", sql)
 
 
 class _NodeProxy(dict):
@@ -145,6 +157,7 @@ class PostgreSQLGraphStore:
         self._brains: dict[str, _BrainGraph] = {}
         self._schema_ready: set[str] = set()
         self._schema_lock = threading.Lock()
+        self._brains_lock = threading.RLock()
 
     def _ensure_brain_schema(self, brain_id: str) -> None:
         if brain_id in self._schema_ready:
@@ -171,9 +184,48 @@ class PostgreSQLGraphStore:
     def get_brain(self, brain_id: str) -> _BrainGraph:
         return self._load_brain(brain_id)
 
+    def invalidate_brain(self, brain_id: str) -> None:
+        with self._brains_lock:
+            self._brains.pop(brain_id, None)
+
+    def _db_graph_counts(self, brain_id: str) -> tuple[int, int]:
+        self._ensure_brain_schema(brain_id)
+        with borrow(get_brain_pool(brain_id)) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM kg_nodes")
+                nodes = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM kg_relationships")
+                rels = int(cur.fetchone()[0])
+        return nodes, rels
+
     def _load_brain(self, brain_id: str) -> _BrainGraph:
-        if brain_id in self._brains:
-            return self._brains[brain_id]
+        """Read path: refresh from Postgres when another process wrote data."""
+        with self._brains_lock:
+            cached = self._brains.get(brain_id)
+            cached_counts = (
+                (cached.graph.number_of_nodes(), cached.graph.number_of_edges())
+                if cached is not None
+                else None
+            )
+
+        if cached is not None and cached_counts is not None:
+            try:
+                if self._db_graph_counts(brain_id) == cached_counts:
+                    return cached
+            except Exception:
+                pass
+
+        with self._brains_lock:
+            return self._reload_brain_locked(brain_id)
+
+    def _ensure_brain_in_memory_locked(self, brain_id: str) -> _BrainGraph:
+        """Write path: reuse the in-process graph; load from DB only if missing."""
+        cached = self._brains.get(brain_id)
+        if cached is not None:
+            return cached
+        return self._reload_brain_locked(brain_id)
+
+    def _reload_brain_locked(self, brain_id: str) -> _BrainGraph:
         self._ensure_brain_schema(brain_id)
         brain = _BrainGraph(brain_id)
         with self._connection(brain_id) as conn:
@@ -342,7 +394,7 @@ class PostgreSQLGraphStore:
         max_rows: int = MAX_READ_QUERY_ROWS,
     ) -> dict[str, Any]:
         try:
-            sql = validate_read_only_sql(query)
+            sql = validate_read_only_sql(normalize_read_sql(query))
         except ReadQueryValidationError as exc:
             raise GraphDatabaseError(str(exc)) from exc
         self._ensure_brain_schema(brain_id)
@@ -366,11 +418,31 @@ class PostgreSQLGraphStore:
         identification: dict[str, Any],
         properties: dict[str, Any],
     ) -> str:
-        brain = self._load_brain(brain_id)
-        merged_props = {**identification, **properties}
-        node_uuid = brain.upsert_node(labels, identification, merged_props)
-        self._persist_node(brain_id, node_uuid, brain.node_data(node_uuid))
+        with self._brains_lock:
+            brain = self._ensure_brain_in_memory_locked(brain_id)
+            merged_props = {**identification, **properties}
+            node_uuid = brain.upsert_node(labels, identification, merged_props)
+            payload = dict(brain.node_data(node_uuid))
+        self._persist_node(brain_id, node_uuid, payload)
         return node_uuid
+
+    def _ensure_relationship_endpoint(
+        self,
+        brain: _BrainGraph,
+        labels: list[str],
+        name: Any,
+        node_uuid: Optional[str],
+    ) -> tuple[Optional[str], Optional[dict]]:
+        if node_uuid and node_uuid in brain.graph:
+            return node_uuid, None
+        if node_uuid:
+            resolved = brain.upsert_node(
+                labels,
+                {"uuid": node_uuid, "name": name},
+                {"uuid": node_uuid, "name": name},
+            )
+            return resolved, dict(brain.node_data(resolved))
+        return self.resolve_node_by_name_labels(brain, labels, name), None
 
     def merge_relationship(
         self,
@@ -384,34 +456,53 @@ class PostgreSQLGraphStore:
         subject_uuid: Optional[str] = None,
         object_uuid: Optional[str] = None,
     ) -> Optional[tuple[dict, dict]]:
-        brain = self._load_brain(brain_id)
-        source_uuid = subject_uuid if subject_uuid and subject_uuid in brain.graph else None
-        target_uuid = object_uuid if object_uuid and object_uuid in brain.graph else None
-        if not source_uuid:
-            source_uuid = self.resolve_node_by_name_labels(
-                brain, subject_labels, subject_name
+        pending_nodes: list[tuple[str, dict]] = []
+        with self._brains_lock:
+            brain = self._ensure_brain_in_memory_locked(brain_id)
+            source_uuid, source_payload = self._ensure_relationship_endpoint(
+                brain, subject_labels, subject_name, subject_uuid
             )
-        if not target_uuid:
-            target_uuid = self.resolve_node_by_name_labels(
-                brain, object_labels, object_name
+            target_uuid, target_payload = self._ensure_relationship_endpoint(
+                brain, object_labels, object_name, object_uuid
             )
-        if not source_uuid or not target_uuid:
-            return None
-        props = dict(rel_props)
-        props["rel_type"] = rel_type
-        rel_uuid = props.get("uuid") or f"{source_uuid}-{rel_type}-{target_uuid}"
-        props["uuid"] = rel_uuid
-        if brain.graph.has_edge(source_uuid, target_uuid, key=rel_uuid):
-            existing = dict(brain.graph.get_edge_data(source_uuid, target_uuid, key=rel_uuid))
-            existing.update(props)
-            props = existing
-            props["uuid"] = rel_uuid
+            if source_payload is not None and source_uuid:
+                pending_nodes.append((source_uuid, source_payload))
+            if target_payload is not None and target_uuid:
+                pending_nodes.append((target_uuid, target_payload))
+            if not source_uuid or not target_uuid:
+                raise GraphDatabaseError(
+                    "Cannot persist relationship "
+                    f"{rel_type!r}: missing endpoint nodes "
+                    f"(subject_uuid={subject_uuid!r}, object_uuid={object_uuid!r}, "
+                    f"subject_name={subject_name!r}, object_name={object_name!r})"
+                )
+            props = dict(rel_props)
             props["rel_type"] = rel_type
-        brain.graph.add_edge(source_uuid, target_uuid, key=rel_uuid, **props)
-        self._persist_relationship(
-            brain_id, rel_uuid, rel_type, source_uuid, target_uuid, props
-        )
-        return brain.node_data(source_uuid), brain.node_data(target_uuid)
+            rel_uuid = props.get("uuid") or f"{source_uuid}-{rel_type}-{target_uuid}"
+            props["uuid"] = rel_uuid
+            if brain.graph.has_edge(source_uuid, target_uuid, key=rel_uuid):
+                existing = dict(
+                    brain.graph.get_edge_data(source_uuid, target_uuid, key=rel_uuid)
+                )
+                existing.update(props)
+                props = existing
+                props["uuid"] = rel_uuid
+                props["rel_type"] = rel_type
+            brain.graph.add_edge(source_uuid, target_uuid, key=rel_uuid, **props)
+            source_data = dict(brain.node_data(source_uuid))
+            target_data = dict(brain.node_data(target_uuid))
+            rel_payload = (
+                rel_uuid,
+                rel_type,
+                source_uuid,
+                target_uuid,
+                dict(props),
+            )
+
+        for node_id, payload in pending_nodes:
+            self._persist_node(brain_id, node_id, payload)
+        self._persist_relationship(brain_id, *rel_payload)
+        return source_data, target_data
 
     def resolve_node_by_name_labels(
         self, brain: _BrainGraph, labels: list[str], name: Any
