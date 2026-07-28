@@ -1,6 +1,31 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { apiFetch, fetchBrainsList, getSession, type BrainRecord } from "../lib/api";
+import { Link as RouterLink } from "react-router-dom";
+import {
+  Alert,
+  Button,
+  ClipboardCopy,
+  Field,
+  FieldLabel,
+  List,
+  ListItem,
+  SectionBand,
+  SectionBandContent,
+  SectionBandDescription,
+  SectionBandEyebrow,
+  SectionBandHeader,
+  SectionBandTitle,
+  SectionStack,
+  Stack,
+  Textarea,
+  TextField,
+} from "lumen-ui-kit";
+import {
+  apiFetch,
+  fetchBrainsList,
+  getSession,
+  type BrainRecord,
+} from "../lib/api";
+import { PageFrame } from "../components/Workbench";
 
 export default function IngestPage() {
   const session = getSession();
@@ -35,12 +60,15 @@ export default function IngestPage() {
     setIngestResult(null);
     setTaskId(null);
     try {
-      const res = await apiFetch<{ message: string; task_id: string }>("/ingest/", {
-        method: "POST",
-        body: JSON.stringify({
-          data: { data_type: "text", text_data: text },
-        }),
-      });
+      const res = await apiFetch<{ message: string; task_id: string }>(
+        "/ingest/",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            data: { data_type: "text", text_data: text },
+          }),
+        },
+      );
       setIngestResult(res.message);
       setTaskId(res.task_id);
       setText("");
@@ -65,110 +93,163 @@ export default function IngestPage() {
       setBrains((prev) => [...prev, res]);
       setNewBrainId("");
     } catch (err) {
-      setBrainsError(err instanceof Error ? err.message : "Failed to create brain");
+      setBrainsError(
+        err instanceof Error ? err.message : "Failed to create brain",
+      );
     } finally {
       setCreating(false);
     }
   }
 
   return (
-    <div className="max-w-2xl space-y-8">
-      <div>
-        <h1 className="mb-1 text-2xl font-semibold">Ingest</h1>
-        <p className="text-sm text-slate-500">
-          Ingesting into brain{" "}
-          <span className="text-cyan-400">{session?.brainId}</span>
-        </p>
-      </div>
+    <PageFrame className="overflow-auto">
+      <SectionStack className="max-w-4xl border border-lumen-border">
+        <SectionBand tone="accent">
+          <SectionBandHeader>
+            <SectionBandEyebrow>Pipeline</SectionBandEyebrow>
+            <SectionBandTitle>Ingest</SectionBandTitle>
+            <SectionBandDescription>
+              Submitting into brain{" "}
+              <span className="font-mono text-lumen-foreground">
+                {session?.brainId}
+              </span>
+              . Completed jobs appear under Tasks.
+            </SectionBandDescription>
+          </SectionBandHeader>
+        </SectionBand>
 
-      <form onSubmit={handleIngest} className="space-y-4 rounded-xl border border-slate-800 bg-slate-950 p-6">
-        <label className="flex flex-col gap-2 text-sm">
-          <span className="text-slate-400">Text to ingest</span>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={6}
-            required
-            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-cyan-600"
-            placeholder="Emily organized the AI Ethics Meetup in London on March 8, 2024."
-          />
-        </label>
-        {ingestError && (
-          <p className="text-sm text-red-400">{ingestError}</p>
-        )}
-        {ingestResult && (
-          <p className="text-sm text-emerald-400">
-            {ingestResult}
-            {taskId && (
-              <>
-                {" "}
-                —{" "}
-                <Link to="/tasks" className="text-cyan-500 hover:underline">
-                  View task {taskId}
-                </Link>
-              </>
-            )}
-          </p>
-        )}
-        <button
-          type="submit"
-          disabled={ingesting || !text.trim()}
-          className="rounded-lg bg-cyan-700 px-4 py-2 text-sm font-medium hover:bg-cyan-600 disabled:opacity-50"
-        >
-          {ingesting ? "Submitting…" : "Ingest text"}
-        </button>
-      </form>
-
-      <div className="rounded-xl border border-slate-800 bg-slate-950 p-6">
-        <h2 className="mb-1 font-semibold">Brains</h2>
-        <p className="mb-4 text-xs text-slate-500">
-          Requires system BRAINPAT_TOKEN from your .env
-        </p>
-
-        {brainsError && (
-          <p className="mb-3 text-sm text-amber-400">{brainsError}</p>
-        )}
-
-        {brains.length > 0 && (
-          <ul className="mb-4 space-y-1 text-sm">
-            {brains.map((b) => (
-              <li key={b.id ?? b.name_key} className="text-slate-400">
-                <span className="text-cyan-400">{b.name_key}</span>
-                {b.pat && (
-                  <span className="ml-2 font-mono text-xs text-slate-600">
-                    pat: {b.pat.slice(0, 8)}…
-                  </span>
+        <SectionBand>
+          <SectionBandHeader>
+            <SectionBandEyebrow>Content</SectionBandEyebrow>
+            <SectionBandTitle>Text ingest</SectionBandTitle>
+            <SectionBandDescription>
+              Free-form text is queued for extraction and storage.
+            </SectionBandDescription>
+          </SectionBandHeader>
+          <SectionBandContent>
+            <form onSubmit={handleIngest}>
+              <Stack gap="md">
+                <Field>
+                  <FieldLabel htmlFor="ingest-text">Text to ingest</FieldLabel>
+                  <Textarea
+                    id="ingest-text"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    rows={8}
+                    required
+                    placeholder="Emily organized the AI Ethics Meetup in London on March 8, 2024."
+                  />
+                </Field>
+                {ingestError && (
+                  <Alert variant="danger" title="Ingest failed">
+                    {ingestError}
+                  </Alert>
                 )}
-              </li>
-            ))}
-          </ul>
-        )}
+                {ingestResult && (
+                  <Alert variant="success" title="Submitted">
+                    {ingestResult}
+                    {taskId && (
+                      <>
+                        {" "}
+                        —{" "}
+                        <RouterLink
+                          to="/tasks"
+                          className="underline underline-offset-2"
+                        >
+                          View task {taskId}
+                        </RouterLink>
+                      </>
+                    )}
+                  </Alert>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="submit"
+                    disabled={!text.trim()}
+                    isPending={ingesting}
+                    pendingLabel="Submitting…"
+                  >
+                    Ingest text
+                  </Button>
+                  <RouterLink
+                    to="/tasks"
+                    className="inline-flex h-11 items-center border border-lumen-control-border bg-lumen-action-secondary px-4 text-sm font-medium text-lumen-on-action-secondary"
+                  >
+                    Open tasks
+                  </RouterLink>
+                </div>
+              </Stack>
+            </form>
+          </SectionBandContent>
+        </SectionBand>
 
-        <form onSubmit={handleCreateBrain} className="flex gap-2">
-          <input
-            type="text"
-            value={newBrainId}
-            onChange={(e) => setNewBrainId(e.target.value)}
-            pattern="[a-zA-Z][a-zA-Z0-9]*"
-            placeholder="newBrainId"
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={creating || !newBrainId.trim()}
-            className="rounded-lg border border-slate-700 px-4 py-2 text-sm hover:border-cyan-700 disabled:opacity-50"
-          >
-            Create
-          </button>
-        </form>
+        <SectionBand tone="muted">
+          <SectionBandHeader>
+            <SectionBandEyebrow>Administration</SectionBandEyebrow>
+            <SectionBandTitle>Brains</SectionBandTitle>
+            <SectionBandDescription>
+              Creating brains requires the system BRAINPAT_TOKEN from your
+              environment.
+            </SectionBandDescription>
+          </SectionBandHeader>
+          <SectionBandContent>
+            <Stack gap="md">
+              {brainsError && (
+                <Alert variant="warning" title="Brains unavailable">
+                  {brainsError}
+                </Alert>
+              )}
 
-        {createdPat && (
-          <div className="mt-4 rounded-lg border border-emerald-900 bg-emerald-950/30 p-3">
-            <p className="mb-1 text-xs text-emerald-400">New brain PAT (copy now):</p>
-            <code className="break-all text-xs text-slate-300">{createdPat}</code>
-          </div>
-        )}
-      </div>
-    </div>
+              {brains.length > 0 && (
+                <List>
+                  {brains.map((b) => (
+                    <ListItem key={b.id ?? b.name_key}>
+                      <span className="font-mono text-sm text-lumen-foreground">
+                        {b.name_key}
+                      </span>
+                      {b.pat ? (
+                        <span className="ml-2 font-mono text-xs text-lumen-muted-foreground">
+                          pat {b.pat.slice(0, 8)}…
+                        </span>
+                      ) : null}
+                    </ListItem>
+                  ))}
+                </List>
+              )}
+
+              <form
+                onSubmit={handleCreateBrain}
+                className="flex flex-wrap items-end gap-2"
+              >
+                <TextField
+                  id="new-brain-id"
+                  label="New brain id"
+                  value={newBrainId}
+                  onChange={(e) => setNewBrainId(e.target.value)}
+                  pattern="[a-zA-Z][a-zA-Z0-9]*"
+                  placeholder="newBrainId"
+                  containerClassName="min-w-[14rem] flex-1"
+                />
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  disabled={!newBrainId.trim()}
+                  isPending={creating}
+                  pendingLabel="Creating…"
+                >
+                  Create brain
+                </Button>
+              </form>
+
+              {createdPat && (
+                <Alert variant="success" title="New brain PAT (copy now)">
+                  <ClipboardCopy value={createdPat} label="Copy PAT" />
+                </Alert>
+              )}
+            </Stack>
+          </SectionBandContent>
+        </SectionBand>
+      </SectionStack>
+    </PageFrame>
   );
 }

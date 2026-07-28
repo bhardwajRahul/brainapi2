@@ -1,5 +1,26 @@
 import { useEffect, useState } from "react";
+import {
+  Alert,
+  Button,
+  SearchInput,
+  Select,
+  Table,
+  TableBody,
+  TableCell,
+  TableEmptyState,
+  TableHead,
+  TableHeader,
+  TablePagination,
+  TableRow,
+  TableToolbar,
+  TableToolbarContent,
+  TableToolbarFilters,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from "lumen-ui-kit";
 import { apiFetch } from "../lib/api";
+import { JsonInspector, InlineField, Workbench } from "../components/Workbench";
 
 type Tab = "chunks" | "structured";
 
@@ -74,138 +95,147 @@ export default function DataPage() {
     };
   }, [tab, query, skip, limit, selectedType]);
 
+  const start = total === 0 ? 0 : skip + 1;
+  const end = Math.min(skip + limit, total);
+  const selectedId = selected
+    ? String(selected.id ?? selected.resource_id ?? "Record")
+    : "";
+
   return (
-    <div>
-      <h1 className="mb-4 text-2xl font-semibold">Data</h1>
-      <div className="mb-4 flex gap-2">
-        {(["chunks", "structured"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => {
-              setTab(t);
+    <Workbench
+      flush
+      title="Data"
+      description={`${total.toLocaleString()} records in the active brain memory store`}
+      toolbar={
+        <div className="flex flex-col gap-3">
+          <Tabs
+            value={tab}
+            onValueChange={(value) => {
+              setTab(value as Tab);
               setSkip(0);
               setSelected(null);
             }}
-            className={`rounded-lg px-4 py-2 text-sm ${
-              tab === t
-                ? "bg-cyan-900 text-cyan-300"
-                : "bg-slate-900 text-slate-400 hover:text-slate-200"
-            }`}
           >
-            {t === "chunks" ? "Text chunks" : "Structured data"}
-          </button>
-        ))}
-      </div>
-
-      <div className="mb-4 flex flex-wrap gap-2">
-        <input
-          type="search"
-          placeholder="Search…"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setSkip(0);
-          }}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-        />
-        {tab === "structured" && (
-          <select
-            value={selectedType}
-            onChange={(e) => {
-              setSelectedType(e.target.value);
-              setSkip(0);
-            }}
-            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-          >
-            <option value="">All types</option>
-            {types.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
-
-      <div className="flex gap-4">
-        <div className="flex-1 overflow-hidden rounded-xl border border-slate-800">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-800 bg-slate-950 text-slate-500">
-              <tr>
-                <th className="px-4 py-2">ID</th>
-                <th className="px-4 py-2">Preview</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={2} className="px-4 py-8 text-center text-slate-500">
-                    Loading…
-                  </td>
-                </tr>
-              ) : items.length === 0 ? (
-                <tr>
-                  <td colSpan={2} className="px-4 py-8 text-center text-slate-500">
-                    No results
-                  </td>
-                </tr>
-              ) : (
-                items.map((item) => {
-                  const id = String(item.id ?? item.resource_id ?? "—");
-                  const preview =
-                    tab === "chunks"
-                      ? String(item.text ?? item.content ?? "").slice(0, 120)
-                      : JSON.stringify(item.json_data ?? item).slice(0, 120);
-                  return (
-                    <tr
-                      key={id}
-                      onClick={() => setSelected(item)}
-                      className="cursor-pointer border-b border-slate-900 hover:bg-slate-900/50"
-                    >
-                      <td className="max-w-[140px] truncate px-4 py-2 font-mono text-xs text-cyan-600">
-                        {id}
-                      </td>
-                      <td className="px-4 py-2 text-slate-400">{preview}</td>
-                    </tr>
-                  );
-                })
+            <TabsList>
+              <TabsTrigger value="chunks">Text chunks</TabsTrigger>
+              <TabsTrigger value="structured">Structured data</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <TableToolbar>
+            <TableToolbarFilters className="sm:items-center">
+              <SearchInput
+                aria-label="Search data"
+                placeholder="Search records…"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSkip(0);
+                }}
+                className="h-9 min-w-[16rem] flex-1"
+              />
+              {tab === "structured" && (
+                <InlineField id="data-type-filter" label="Type">
+                  <Select
+                    id="data-type-filter"
+                    value={selectedType}
+                    onChange={(e) => {
+                      setSelectedType(e.target.value);
+                      setSkip(0);
+                    }}
+                  >
+                    <option value="">All types</option>
+                    {types.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </Select>
+                </InlineField>
               )}
-            </tbody>
-          </table>
-          <div className="flex items-center justify-between border-t border-slate-800 px-4 py-2 text-sm text-slate-500">
-            <span>
-              {skip + 1}–{Math.min(skip + limit, total)} of {total}
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={skip === 0}
-                onClick={() => setSkip(Math.max(0, skip - limit))}
-                className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
-                disabled={skip + limit >= total}
-                onClick={() => setSkip(skip + limit)}
-                className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
+            </TableToolbarFilters>
+            <TableToolbarContent />
+          </TableToolbar>
+          {error && (
+            <Alert variant="danger" title="Failed to load">
+              {error}
+            </Alert>
+          )}
         </div>
-
-        {selected && (
-          <pre className="w-96 shrink-0 overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs text-slate-400">
-            {JSON.stringify(selected, null, 2)}
-          </pre>
-        )}
-      </div>
-    </div>
+      }
+      inspector={
+        selected ? (
+          <JsonInspector
+            title="Selected record"
+            subtitle={selectedId}
+            value={selected}
+            onClose={() => setSelected(null)}
+          />
+        ) : undefined
+      }
+    >
+      <Table containerProps={{ "aria-label": "Data records" }}>
+        <TableHeader>
+          <TableRow>
+            <TableHead>ID</TableHead>
+            <TableHead>Preview</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {loading ? (
+            <TableEmptyState colSpan={2} title="Loading…" />
+          ) : items.length === 0 ? (
+            <TableEmptyState colSpan={2} title="No results" />
+          ) : (
+            items.map((item, index) => {
+              const id = String(item.id ?? item.resource_id ?? `row-${index}`);
+              const preview =
+                tab === "chunks"
+                  ? String(item.text ?? item.content ?? "").slice(0, 160)
+                  : JSON.stringify(item.json_data ?? item).slice(0, 160);
+              const isSelected = selected === item;
+              return (
+                <TableRow
+                  key={id}
+                  onClick={() => setSelected(item)}
+                  aria-selected={isSelected}
+                  className={
+                    isSelected
+                      ? "cursor-pointer bg-lumen-muted"
+                      : "cursor-pointer"
+                  }
+                >
+                  <TableCell className="max-w-[180px] truncate font-mono text-xs">
+                    {id}
+                  </TableCell>
+                  <TableCell className="text-lumen-muted-foreground">
+                    {preview}
+                  </TableCell>
+                </TableRow>
+              );
+            })
+          )}
+        </TableBody>
+      </Table>
+      <TablePagination start={start} end={end} total={total}>
+        <Button
+          type="button"
+          size="small"
+          variant="secondary"
+          disabled={skip === 0}
+          onClick={() => setSkip(Math.max(0, skip - limit))}
+        >
+          Prev
+        </Button>
+        <Button
+          type="button"
+          size="small"
+          variant="secondary"
+          disabled={skip + limit >= total}
+          onClick={() => setSkip(skip + limit)}
+        >
+          Next
+        </Button>
+      </TablePagination>
+    </Workbench>
   );
 }

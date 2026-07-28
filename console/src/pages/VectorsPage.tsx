@@ -1,5 +1,25 @@
 import { useEffect, useState } from "react";
+import {
+  Alert,
+  Button,
+  Checkbox,
+  ChoiceField,
+  ChoiceFieldLabel,
+  Select,
+  Table,
+  TableBody,
+  TableCell,
+  TableEmptyState,
+  TableHead,
+  TableHeader,
+  TablePagination,
+  TableRow,
+  TableToolbar,
+  TableToolbarContent,
+  TableToolbarFilters,
+} from "lumen-ui-kit";
 import { apiFetch } from "../lib/api";
+import { JsonInspector, InlineField, Workbench } from "../components/Workbench";
 
 interface VectorItem {
   id: string;
@@ -30,7 +50,9 @@ export default function VectorsPage() {
         setStores(res.stores ?? []);
         if (res.stores?.[0]) setStore(res.stores[0].name);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load stores"));
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : "Failed to load stores"),
+      );
   }, []);
 
   useEffect(() => {
@@ -55,7 +77,9 @@ export default function VectorsPage() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load vectors");
+          setError(
+            err instanceof Error ? err.message : "Failed to load vectors",
+          );
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -67,124 +91,140 @@ export default function VectorsPage() {
     };
   }, [store, skip, limit, includeEmbeddings]);
 
+  const start = total === 0 ? 0 : skip + 1;
+  const end = Math.min(skip + limit, total);
+
   return (
-    <div>
-      <h1 className="mb-4 text-2xl font-semibold">Vectors</h1>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <select
-          value={store}
-          onChange={(e) => {
-            setStore(e.target.value);
-            setSkip(0);
-          }}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-        >
-          {stores.map((s) => (
-            <option key={s.name} value={s.name}>
-              {s.name} (dim {s.dimension})
-            </option>
-          ))}
-        </select>
-        <label className="flex items-center gap-2 text-sm text-slate-400">
-          <input
-            type="checkbox"
-            checked={includeEmbeddings}
-            onChange={(e) => setIncludeEmbeddings(e.target.checked)}
-          />
-          Include embeddings
-        </label>
-        <span className="text-sm text-slate-500">{total} total</span>
-      </div>
-
-      {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
-
-      <div className="flex gap-4">
-        <div className="flex-1 overflow-hidden rounded-xl border border-slate-800">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-800 bg-slate-950 text-slate-500">
-              <tr>
-                <th className="px-4 py-2">ID</th>
-                <th className="px-4 py-2">Metadata</th>
-                <th className="px-4 py-2">Dim</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
-                    Loading…
-                  </td>
-                </tr>
-              ) : vectors.length === 0 ? (
-                <tr>
-                  <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
-                    No vectors
-                  </td>
-                </tr>
-              ) : (
-                vectors.map((v) => (
-                  <tr
-                    key={v.id}
-                    onClick={() => setSelected(v)}
-                    className="cursor-pointer border-b border-slate-900 hover:bg-slate-900/50"
-                  >
-                    <td className="max-w-[160px] truncate px-4 py-2 font-mono text-xs text-cyan-600">
-                      {v.id}
-                    </td>
-                    <td className="max-w-md truncate px-4 py-2 text-slate-400">
-                      {JSON.stringify(v.metadata).slice(0, 80)}
-                    </td>
-                    <td className="px-4 py-2 text-slate-500">
-                      {v.embeddings?.length ?? "—"}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-          <div className="flex items-center justify-between border-t border-slate-800 px-4 py-2 text-sm text-slate-500">
-            <span>
-              {skip + 1}–{Math.min(skip + limit, total)} of {total}
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={skip === 0}
-                onClick={() => setSkip(Math.max(0, skip - limit))}
-                className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
-                disabled={skip + limit >= total}
-                onClick={() => setSkip(skip + limit)}
-                className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
-          </div>
+    <Workbench
+      flush
+      title="Vectors"
+      description={
+        store
+          ? `Store ${store} · ${total.toLocaleString()} vectors`
+          : "Select a vector store"
+      }
+      toolbar={
+        <div className="flex flex-col gap-3">
+          <TableToolbar>
+            <TableToolbarFilters className="sm:items-center">
+              <InlineField id="vector-store" label="Store">
+                <Select
+                  id="vector-store"
+                  value={store}
+                  onChange={(e) => {
+                    setStore(e.target.value);
+                    setSkip(0);
+                    setSelected(null);
+                  }}
+                >
+                  {stores.map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name} (dim {s.dimension})
+                    </option>
+                  ))}
+                </Select>
+              </InlineField>
+              <ChoiceField className="min-h-9 items-center py-0">
+                <Checkbox
+                  id="include-embeddings"
+                  checked={includeEmbeddings}
+                  onChange={(e) => setIncludeEmbeddings(e.target.checked)}
+                />
+                <ChoiceFieldLabel htmlFor="include-embeddings">
+                  Include embeddings
+                </ChoiceFieldLabel>
+              </ChoiceField>
+            </TableToolbarFilters>
+            <TableToolbarContent />
+          </TableToolbar>
+          {error && (
+            <Alert variant="danger" title="Failed to load">
+              {error}
+            </Alert>
+          )}
         </div>
-
-        {selected && (
-          <pre className="w-96 shrink-0 overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs text-slate-400">
-            {JSON.stringify(
-              {
-                ...selected,
-                embeddings: selected.embeddings
-                  ? [
-                      ...selected.embeddings.slice(0, 16),
-                      ...(selected.embeddings.length > 16 ? ["…"] : []),
-                    ]
-                  : null,
-              },
-              null,
-              2,
-            )}
-          </pre>
-        )}
-      </div>
-    </div>
+      }
+      inspector={
+        selected ? (
+          <JsonInspector
+            title="Vector detail"
+            subtitle={selected.id}
+            value={{
+              ...selected,
+              embeddings: selected.embeddings
+                ? [
+                    ...selected.embeddings.slice(0, 16),
+                    ...(selected.embeddings.length > 16 ? ["…"] : []),
+                  ]
+                : null,
+            }}
+            onClose={() => setSelected(null)}
+          />
+        ) : undefined
+      }
+    >
+      <Table containerProps={{ "aria-label": "Vectors" }}>
+        <TableHeader>
+          <TableRow>
+            <TableHead>ID</TableHead>
+            <TableHead>Metadata</TableHead>
+            <TableHead>Dim</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {loading ? (
+            <TableEmptyState colSpan={3} title="Loading…" />
+          ) : vectors.length === 0 ? (
+            <TableEmptyState colSpan={3} title="No vectors" />
+          ) : (
+            vectors.map((v) => {
+              const isSelected = selected?.id === v.id;
+              return (
+                <TableRow
+                  key={v.id}
+                  onClick={() => setSelected(v)}
+                  aria-selected={isSelected}
+                  className={
+                    isSelected
+                      ? "cursor-pointer bg-lumen-muted"
+                      : "cursor-pointer"
+                  }
+                >
+                  <TableCell className="max-w-[180px] truncate font-mono text-xs">
+                    {v.id}
+                  </TableCell>
+                  <TableCell className="max-w-md truncate text-lumen-muted-foreground">
+                    {JSON.stringify(v.metadata).slice(0, 100)}
+                  </TableCell>
+                  <TableCell className="text-lumen-muted-foreground">
+                    {v.embeddings?.length ?? "—"}
+                  </TableCell>
+                </TableRow>
+              );
+            })
+          )}
+        </TableBody>
+      </Table>
+      <TablePagination start={start} end={end} total={total}>
+        <Button
+          type="button"
+          size="small"
+          variant="secondary"
+          disabled={skip === 0}
+          onClick={() => setSkip(Math.max(0, skip - limit))}
+        >
+          Prev
+        </Button>
+        <Button
+          type="button"
+          size="small"
+          variant="secondary"
+          disabled={skip + limit >= total}
+          onClick={() => setSkip(skip + limit)}
+        >
+          Next
+        </Button>
+      </TablePagination>
+    </Workbench>
   );
 }

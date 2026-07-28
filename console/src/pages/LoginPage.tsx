@@ -1,5 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  Alert,
+  Button,
+  Callout,
+  PasswordField,
+  Stack,
+  TextField,
+} from "lumen-ui-kit";
 import { loadSession, saveSession } from "../lib/auth";
 import { connectSession, setSession } from "../lib/api";
 
@@ -31,60 +39,104 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-950 p-8 shadow-xl">
-        <h1 className="mb-1 text-2xl font-semibold text-cyan-400">BrainAPI Console</h1>
-        <p className="mb-6 text-sm text-slate-500">
-          Connect to your local BrainAPI instance with a BrainPAT token.
-        </p>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="text-slate-400">API base URL</span>
-            <input
-              type="url"
-              value={apiBaseUrl}
-              onChange={(e) => setApiBaseUrl(e.target.value)}
-              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-cyan-600"
-              required
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="text-slate-400">BrainPAT</span>
-            <input
-              type="password"
-              value={pat}
-              onChange={(e) => setPat(e.target.value)}
-              placeholder="brainpat_… or system token"
-              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 outline-none focus:border-cyan-600"
-              required
-            />
-          </label>
-          <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs text-slate-500">
-            <p className="mb-1">
-              <strong className="text-slate-400">System PAT</strong> — from{" "}
-              <code className="text-cyan-600">BRAINPAT_TOKEN</code> in your{" "}
-              <code className="text-cyan-600">.env</code>. Starts on the default
-              brain; switch brains from the sidebar after login.
-            </p>
-            <p>
-              <strong className="text-slate-400">Per-brain PAT</strong> — returned
-              when creating a brain. Scoped to that brain only.
-            </p>
+    <div className="grid min-h-screen lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+      <aside className="relative hidden flex-col justify-between border-r border-lumen-border bg-lumen-surface p-10 lg:flex">
+        <div>
+          <div className="grid size-10 place-items-center bg-lumen-primary text-sm font-bold text-lumen-on-primary">
+            B
           </div>
-          {error && (
-            <p className="rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
-              {error}
-            </p>
-          )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="rounded-lg bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:opacity-50"
-          >
-            {loading ? "Connecting…" : "Connect"}
-          </button>
-        </form>
-      </div>
+          <h1 className="mt-8 text-3xl font-semibold tracking-tight text-lumen-foreground">
+            BrainAPI
+            <span className="mt-2 block text-lg font-normal text-lumen-muted-foreground">
+              Operations console
+            </span>
+          </h1>
+          <p className="mt-4 max-w-sm text-sm leading-relaxed text-lumen-muted-foreground">
+            Connect a local or remote BrainAPI instance with a BrainPAT, then
+            inspect memory, graph topology, vectors, and ingestion tasks.
+          </p>
+        </div>
+        <dl className="grid gap-4 text-sm">
+          <div>
+            <dt className="text-lumen-muted-foreground">Typical workflow</dt>
+            <dd className="mt-1 text-lumen-foreground">
+              Ingest → Tasks → Graph / Data
+            </dd>
+          </div>
+          <div>
+            <dt className="text-lumen-muted-foreground">Auth modes</dt>
+            <dd className="mt-1 text-lumen-foreground">
+              System PAT or per-brain PAT
+            </dd>
+          </div>
+        </dl>
+      </aside>
+
+      <main className="flex items-center justify-center p-6 sm:p-10">
+        <div className="w-full max-w-md">
+          <div className="mb-8 lg:hidden">
+            <div className="grid size-9 place-items-center bg-lumen-primary text-xs font-bold text-lumen-on-primary">
+              B
+            </div>
+            <h1 className="mt-4 text-2xl font-semibold text-lumen-foreground">
+              BrainAPI Console
+            </h1>
+          </div>
+
+          <h2 className="text-xl font-semibold text-lumen-foreground">
+            Connect instance
+          </h2>
+          <p className="mt-1 text-sm text-lumen-muted-foreground">
+            Use your API base URL and a BrainPAT token to enter the workspace.
+          </p>
+
+          <form onSubmit={handleSubmit} className="mt-8">
+            <Stack gap="md">
+              <TextField
+                id="login-api-base-url"
+                label="API base URL"
+                type="url"
+                value={apiBaseUrl}
+                onChange={(e) => setApiBaseUrl(e.target.value)}
+                required
+              />
+              <PasswordField
+                id="login-brainpat"
+                label="BrainPAT"
+                value={pat}
+                onChange={(e) => setPat(e.target.value)}
+                placeholder="brainpat_… or system token"
+                required
+              />
+              <Callout title="Token types">
+                <p className="mb-2">
+                  <strong>System PAT</strong> — from{" "}
+                  <code>BRAINPAT_TOKEN</code> in your <code>.env</code>. Starts
+                  on the default brain; switch brains from the header after
+                  login.
+                </p>
+                <p>
+                  <strong>Per-brain PAT</strong> — returned when creating a
+                  brain. Scoped to that brain only.
+                </p>
+              </Callout>
+              {error && (
+                <Alert variant="danger" title="Connection failed">
+                  {error}
+                </Alert>
+              )}
+              <Button
+                type="submit"
+                isFullWidth
+                isPending={loading}
+                pendingLabel="Connecting…"
+              >
+                Connect to console
+              </Button>
+            </Stack>
+          </form>
+        </div>
+      </main>
     </div>
   );
 }

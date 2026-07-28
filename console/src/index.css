@@ -1,34 +1,35 @@
 @import "tailwindcss";
+@import "lumen-ui-kit/styles.css";
+@import "lumen-ui-kit/graph/styles.css";
+@source "../node_modules/lumen-ui-kit/dist";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
 
 body {
-  margin: 0;
   min-height: 100vh;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  background: #0f1419;
-  color: #e7ecf3;
+  background-color: var(--lumen-color-background);
+  color: var(--lumen-color-foreground);
+  font-family: var(--font-lumen-sans);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-#root {
-  min-height: 100vh;
+[data-slot="app-shell"] {
+  height: calc(100vh - var(--lumen-layout-header-height, 3.5rem));
 }
 
-.vis-network:focus {
-  outline: none;
-}
-
-div.vis-navigation div.vis-button {
-  background-color: #1e293b;
-  border: 1px solid #334155;
-  color: #94a3b8;
-}
-
-div.vis-navigation div.vis-button:hover {
-  background-color: #334155;
-  color: #e2e8f0;
+[data-slot="app-shell-main"] {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
 }

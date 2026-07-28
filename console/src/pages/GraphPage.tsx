@@ -1,30 +1,122 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import GraphCanvas from "../components/GraphCanvas";
+import {
+  Alert,
+  Button,
+  CodeBlock,
+  NumberInput,
+  Tag,
+  Toolbar,
+  ToolbarGroup,
+  ToolbarItem,
+  ToolbarLabel,
+  ToolbarSeparator,
+  ToolbarSpacer,
+} from "lumen-ui-kit";
+import {
+  GraphExplorer,
+  GraphInspector,
+  getGraphTone,
+  type GraphFilterState,
+  type GraphNode,
+  type GraphPropertyValue,
+  type GraphRelationship as LumenRelationship,
+  type GraphSelection,
+} from "lumen-ui-kit/graph";
+import { RestartIcon, Icon } from "lumen-ui-kit/icons";
 import { apiFetch, getSession } from "../lib/api";
-import { colorForLabel, primaryLabel } from "../lib/graphColors";
 import {
   filterRelationshipsByEntities,
   filterRelationshipsByLabel,
   filterRelationshipsByQuery,
   mergeGraphData,
   normalizeTriples,
-  relationshipsToEdges,
   type GraphEntity,
   type GraphRelationship,
 } from "../lib/graphModel";
+import { Workbench } from "../components/Workbench";
+
+const LOAD_PRESETS = [100, 250, 500, 1000, 2000] as const;
+const MIN_LIMIT = 1;
+const MAX_LIMIT = 5000;
+
+function clampLimit(value: number): number {
+  if (!Number.isFinite(value)) return 250;
+  return Math.min(MAX_LIMIT, Math.max(MIN_LIMIT, Math.round(value)));
+}
 
 interface NeighborEntry {
   neighbor: GraphEntity;
   relationship: { name: string; uuid?: string };
 }
 
-interface GraphFilters {
-  label: string;
-  query: string;
-  limit: number;
+const EMPTY_FILTERS: GraphFilterState = {
+  query: "",
+  nodeLabels: [],
+  relationshipTypes: [],
+};
+
+function toPropertyValue(value: unknown): GraphPropertyValue | undefined {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const scalars = value.filter(
+      (item): item is string | number | boolean | null =>
+        item === null ||
+        typeof item === "string" ||
+        typeof item === "number" ||
+        typeof item === "boolean",
+    );
+    return scalars;
+  }
+  return JSON.stringify(value);
 }
 
-const DEFAULT_FILTERS: GraphFilters = { label: "", query: "", limit: 250 };
+function toLumenProperties(
+  properties?: Record<string, unknown>,
+): Record<string, GraphPropertyValue> | undefined {
+  if (!properties) return undefined;
+  const next: Record<string, GraphPropertyValue> = {};
+  for (const [key, value] of Object.entries(properties)) {
+    const mapped = toPropertyValue(value);
+    if (mapped !== undefined) next[key] = mapped;
+  }
+  return next;
+}
+
+function entityToNode(entity: GraphEntity): GraphNode {
+  const labels = entity.labels?.length ? entity.labels : ["Entity"];
+  return {
+    id: entity.uuid,
+    label: entity.name,
+    labels,
+    description: entity.description,
+    properties: toLumenProperties(entity.properties),
+    tone: getGraphTone(labels[0] ?? "Entity"),
+  };
+}
+
+function relationshipToLumen(
+  rel: GraphRelationship,
+  index: number,
+): LumenRelationship {
+  const type = rel.predicate.name || "RELATED";
+  return {
+    id:
+      rel.predicate.uuid ??
+      `${rel.subject.uuid}-${type}-${rel.object.uuid}-${index}`,
+    source: rel.subject.uuid,
+    target: rel.object.uuid,
+    type,
+    label: type,
+    directed: true,
+  };
+}
 
 function mergeEntities(
   current: GraphEntity[],
@@ -54,105 +146,84 @@ function mergeRelationships(
 function applyGraphFilters(
   rels: GraphRelationship[],
   entities: GraphEntity[],
-  filters: GraphFilters,
+  label: string,
+  query: string,
 ): GraphRelationship[] {
-  const hasFilters = !!(filters.label || filters.query);
+  const hasFilters = !!(label || query);
   if (!hasFilters) return rels;
 
-  if (filters.label && filters.query) {
+  if (label && query) {
     return filterRelationshipsByQuery(
-      filterRelationshipsByLabel(rels, filters.label),
-      filters.query,
+      filterRelationshipsByLabel(rels, label),
+      query,
     );
   }
-  if (filters.label) {
-    return filterRelationshipsByLabel(rels, filters.label);
+  if (label) {
+    return filterRelationshipsByLabel(rels, label);
   }
   if (entities.length > 0) {
     return filterRelationshipsByEntities(rels, entities);
   }
-  return filterRelationshipsByQuery(rels, filters.query);
+  return filterRelationshipsByQuery(rels, query);
+}
+
+function asEntityOrFallback(
+  value: GraphEntity | null | undefined,
+  fallback: GraphEntity | null,
+): GraphEntity {
+  if (value?.uuid) return value;
+  if (fallback) return fallback;
+  throw new Error("missing entity");
 }
 
 export default function GraphPage() {
   const [entities, setEntities] = useState<GraphEntity[]>([]);
   const [relationships, setRelationships] = useState<GraphRelationship[]>([]);
-  const [labels, setLabels] = useState<string[]>([]);
-  const [draftLabel, setDraftLabel] = useState("");
-  const [draftQuery, setDraftQuery] = useState("");
-  const [draftLimit, setDraftLimit] = useState(DEFAULT_FILTERS.limit);
-  const [selectedNode, setSelectedNode] = useState<GraphEntity | null>(null);
+  const [limit, setLimit] = useState(250);
+  const [draftLimit, setDraftLimit] = useState(250);
   const [loading, setLoading] = useState(true);
   const [expanding, setExpanding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [physics, setPhysics] = useState(true);
-  const [activeFilters, setActiveFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
+  const [physicsEnabled, setPhysicsEnabled] = useState(true);
+  const [filterState, setFilterState] =
+    useState<GraphFilterState>(EMPTY_FILTERS);
+  const [selection, setSelection] = useState<GraphSelection>(null);
   const activeBrainId = getSession()?.brainId ?? "default";
 
-  const loadGraph = useCallback(async (filters: GraphFilters) => {
+  const loadGraph = useCallback(async (nextLimit: number) => {
+    const applied = clampLimit(nextLimit);
     setLoading(true);
     setError(null);
-    setSelectedNode(null);
-    setActiveFilters(filters);
-
-    const hasFilters = !!(filters.label || filters.query);
+    setSelection(null);
 
     try {
       const relParams = new URLSearchParams({
-        limit: String(filters.limit),
+        limit: String(applied),
         skip: "0",
       });
-      if (filters.query) relParams.set("query_text", filters.query);
 
-      const entityParams = new URLSearchParams({
-        limit: String(filters.limit),
-        skip: "0",
-      });
-      if (filters.label) entityParams.set("node_labels", filters.label);
-      if (filters.query) entityParams.set("query_text", filters.query);
-
-      const [relRes, labelRes, entityRes] = await Promise.all([
+      const [relRes] = await Promise.all([
         apiFetch<{ relationships: unknown[]; total?: number }>(
           `/retrieve/relationships?${relParams}`,
         ),
-        apiFetch<string[]>("/meta/entity-labels"),
-        hasFilters
-          ? apiFetch<{ entities: GraphEntity[]; total?: number }>(
-              `/retrieve/entities?${entityParams}`,
-            )
-          : Promise.resolve({ entities: [] as GraphEntity[], total: 0 }),
       ]);
 
       const normalizedRels = normalizeTriples(relRes.relationships ?? []);
-      const entityList = entityRes.entities ?? [];
+      const filteredRels = applyGraphFilters(normalizedRels, [], "", "");
+      const merged = mergeGraphData([], filteredRels);
 
-      let filteredRels = applyGraphFilters(
-        normalizedRels,
-        entityList,
-        filters,
-      );
-
-      const merged = mergeGraphData(entityList, filteredRels);
-
-      if (!hasFilters) {
-        if (merged.entities.length === 0) {
-          const fallback = await apiFetch<{ entities: GraphEntity[] }>(
-            `/retrieve/entities?limit=${filters.limit}&skip=0`,
-          );
-          setEntities(
-            mergeGraphData(fallback.entities ?? [], normalizedRels).entities,
-          );
-          setRelationships(normalizedRels);
-        } else {
-          setEntities(merged.entities);
-          setRelationships(merged.relationships);
-        }
+      if (merged.entities.length === 0) {
+        const fallback = await apiFetch<{ entities: GraphEntity[] }>(
+          `/retrieve/entities?limit=${applied}&skip=0`,
+        );
+        setEntities(
+          mergeGraphData(fallback.entities ?? [], normalizedRels).entities,
+        );
+        setRelationships(normalizedRels);
       } else {
         setEntities(merged.entities);
         setRelationships(merged.relationships);
       }
-
-      setLabels(Array.isArray(labelRes) ? labelRes : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load graph");
     } finally {
@@ -161,44 +232,26 @@ export default function GraphPage() {
   }, []);
 
   useEffect(() => {
-    loadGraph(DEFAULT_FILTERS);
+    loadGraph(limit);
   }, [loadGraph]);
 
-  function runQuery() {
-    loadGraph({
-      label: draftLabel,
-      query: draftQuery.trim(),
-      limit: draftLimit,
-    });
+  function applyLoadLimit(next?: number) {
+    const applied = clampLimit(next ?? draftLimit);
+    setDraftLimit(applied);
+    setLimit(applied);
+    void loadGraph(applied);
   }
 
-  function clearFilters() {
-    setDraftLabel("");
-    setDraftQuery("");
-    setDraftLimit(DEFAULT_FILTERS.limit);
-    loadGraph(DEFAULT_FILTERS);
-  }
-
-  const nodeIds = useMemo(
-    () => new Set(entities.map((e) => e.uuid)),
-    [entities],
+  const nodes = useMemo(() => entities.map(entityToNode), [entities]);
+  const lumenRelationships = useMemo(
+    () => relationships.map(relationshipToLumen),
+    [relationships],
   );
 
-  const edges = useMemo(
-    () =>
-      relationshipsToEdges(relationships).filter(
-        (e) => nodeIds.has(e.from) && nodeIds.has(e.to),
-      ),
-    [relationships, nodeIds],
-  );
-
-  const legendLabels = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of entities) set.add(primaryLabel(e.labels));
-    return [...set].sort();
+  const entityById = useMemo(() => {
+    const map = new Map(entities.map((entity) => [entity.uuid, entity]));
+    return map;
   }, [entities]);
-
-  const hasActiveFilters = !!(activeFilters.label || activeFilters.query);
 
   async function expandNode(center: GraphEntity) {
     setExpanding(true);
@@ -231,7 +284,7 @@ export default function GraphPage() {
 
       setEntities((prev) => mergeEntities(prev, newEntities));
       setRelationships((prev) => mergeRelationships(prev, newRels));
-      setSelectedNode(centerNode);
+      setSelection({ kind: "node", id: centerNode.uuid });
     } catch {
       /* ignore */
     } finally {
@@ -240,205 +293,174 @@ export default function GraphPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] flex-col">
-      <div className="mb-3 flex flex-wrap items-end gap-2">
-        <div className="mr-2">
-          <h1 className="text-2xl font-semibold">Graph Explorer</h1>
-          <p className="text-xs text-slate-500">
-            Brain <span className="text-cyan-600">{activeBrainId}</span> ·{" "}
-            {entities.length} nodes · {edges.length} edges · {relationships.length}{" "}
-            relationships loaded · double-click to expand
-          </p>
-        </div>
-        <select
-          value={draftLabel}
-          onChange={(e) => setDraftLabel(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm"
-        >
-          <option value="">All labels</option>
-          {labels.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
-        <input
-          type="search"
-          placeholder="Search nodes…"
-          value={draftQuery}
-          onChange={(e) => setDraftQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && runQuery()}
-          className="min-w-[180px] rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm"
-        />
-        <select
-          value={draftLimit}
-          onChange={(e) => setDraftLimit(Number(e.target.value))}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm"
-        >
-          {[100, 250, 500].map((n) => (
-            <option key={n} value={n}>
-              Limit {n}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={runQuery}
-          disabled={loading}
-          className="rounded-lg bg-cyan-800 px-3 py-1.5 text-sm hover:bg-cyan-700 disabled:opacity-50"
-        >
-          {loading ? "Running…" : "Run"}
-        </button>
-        {hasActiveFilters && (
-          <button
-            type="button"
-            onClick={clearFilters}
-            disabled={loading}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-50"
+    <Workbench
+      flush
+      title="Graph"
+      description={`Brain ${activeBrainId} · ${nodes.length} nodes · ${lumenRelationships.length} relationships · limit ${limit}`}
+      toolbar={
+        <div className="flex flex-col gap-3">
+          <Toolbar
+            aria-label="Graph load controls"
+            density="compact"
+            className="items-center"
           >
-            Clear
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => setPhysics((p) => !p)}
-          className={`rounded-lg border px-3 py-1.5 text-sm ${
-            physics
-              ? "border-cyan-700 text-cyan-400"
-              : "border-slate-700 text-slate-400"
-          }`}
-        >
-          Physics {physics ? "on" : "off"}
-        </button>
-      </div>
-
-      {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
-
-      <div className="relative flex min-h-0 flex-1 gap-3">
-        <div className="relative min-w-0 flex-1 overflow-hidden rounded-xl border border-slate-800">
-          {loading ? (
-            <div className="flex h-full items-center justify-center bg-[#1a1d23] text-slate-500">
-              Loading graph…
-            </div>
-          ) : entities.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 bg-[#1a1d23] px-6 text-center text-slate-500">
-              <p>
-                {hasActiveFilters
-                  ? "No matches — try a different label or search term"
-                  : "No nodes in this brain"}
-              </p>
-              <p className="max-w-md text-xs text-slate-600">
-                Active brain:{" "}
-                <span className="text-cyan-700">{activeBrainId}</span>
-                {activeBrainId === "default"
-                  ? ". System PAT defaults to default — switch to locomoconv26 (or your ingest brain) in the sidebar."
-                  : ". If you expected data here, confirm ingest used this same brain id."}
-              </p>
-            </div>
-          ) : (
-            <GraphCanvas
-              entities={entities}
-              edges={edges}
-              selectedId={selectedNode?.uuid ?? null}
-              physics={physics}
-              onSelect={setSelectedNode}
-              onExpand={expandNode}
-            />
-          )}
-
-          {legendLabels.length > 0 && !loading && (
-            <div className="pointer-events-none absolute bottom-3 left-3 max-h-40 overflow-auto rounded-lg border border-slate-700/80 bg-slate-950/90 p-2 text-xs shadow-lg">
-              <div className="mb-1 font-medium text-slate-400">Labels</div>
-              {legendLabels.map((label) => (
-                <div key={label} className="flex items-center gap-2 py-0.5">
-                  <span
-                    className="inline-block h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: colorForLabel(label) }}
-                  />
-                  <span className="text-slate-300">{label}</span>
-                </div>
+            <ToolbarLabel id="graph-load-limit-label">Load limit</ToolbarLabel>
+            <ToolbarGroup
+              aria-labelledby="graph-load-limit-label"
+              variant="segmented"
+            >
+              {LOAD_PRESETS.map((preset) => (
+                <ToolbarItem key={preset}>
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="secondary"
+                    aria-pressed={draftLimit === preset}
+                    onClick={() => setDraftLimit(preset)}
+                  >
+                    {preset.toLocaleString()}
+                  </Button>
+                </ToolbarItem>
               ))}
-            </div>
-          )}
-        </div>
-
-        <div className="w-80 shrink-0 overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-4">
-          {selectedNode ? (
-            <>
-              <div className="mb-3 flex items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-lg font-semibold text-cyan-400">
-                    {selectedNode.name}
-                  </h2>
-                  <p className="mt-0.5 font-mono text-[10px] text-slate-600">
-                    {selectedNode.uuid}
-                  </p>
-                </div>
-                <span
-                  className="mt-1 h-4 w-4 shrink-0 rounded-full"
-                  style={{
-                    backgroundColor: colorForLabel(
-                      primaryLabel(selectedNode.labels),
-                    ),
-                  }}
+            </ToolbarGroup>
+            <ToolbarSeparator />
+            <ToolbarGroup aria-label="Custom load limit" className="items-center">
+              <ToolbarItem className="flex items-center">
+                <NumberInput
+                  id="graph-custom-limit"
+                  aria-label="Custom load limit"
+                  min={MIN_LIMIT}
+                  max={MAX_LIMIT}
+                  step={50}
+                  value={draftLimit}
+                  onChange={(e) =>
+                    setDraftLimit(clampLimit(Number(e.target.value)))
+                  }
+                  className="h-9 w-24"
                 />
-              </div>
-              {selectedNode.labels?.length > 0 && (
-                <div className="mb-3 flex flex-wrap gap-1">
-                  {selectedNode.labels.map((l) => (
-                    <span
-                      key={l}
-                      className="rounded-full px-2 py-0.5 text-xs"
-                      style={{
-                        backgroundColor: `${colorForLabel(l)}33`,
-                        color: colorForLabel(l),
-                      }}
-                    >
-                      {l}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {selectedNode.description && (
-                <p className="mb-3 text-sm leading-relaxed text-slate-400">
-                  {selectedNode.description}
-                </p>
-              )}
-              <button
-                type="button"
-                disabled={expanding}
-                onClick={() => expandNode(selectedNode)}
-                className="mb-3 w-full rounded-lg border border-slate-600 py-2 text-sm text-slate-200 hover:border-cyan-600 hover:text-cyan-300 disabled:opacity-50"
-              >
-                {expanding ? "Expanding…" : "Expand neighbors"}
-              </button>
-              <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                Properties
-              </div>
-              <pre className="mt-2 overflow-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-400">
-                {JSON.stringify(selectedNode.properties ?? {}, null, 2)}
-              </pre>
-            </>
-          ) : (
-            <div className="text-sm text-slate-500">
-              <p className="mb-2 font-medium text-slate-400">Node details</p>
-              <p>Click a node to inspect it.</p>
-              <p className="mt-2">
-                Double-click to expand its neighborhood.
-              </p>
-            </div>
-          )}
+              </ToolbarItem>
+            </ToolbarGroup>
+            <ToolbarSpacer />
+            <ToolbarGroup aria-label="Load actions" className="items-center">
+              <ToolbarItem>
+                <Button
+                  type="button"
+                  size="small"
+                  variant="secondary"
+                  onClick={() => applyLoadLimit()}
+                  disabled={loading}
+                >
+                  Apply
+                </Button>
+              </ToolbarItem>
+              <ToolbarItem>
+                <Button
+                  type="button"
+                  size="small"
+                  onClick={() => applyLoadLimit(limit)}
+                  isPending={loading}
+                  pendingLabel="Loading…"
+                >
+                  <Icon source={RestartIcon} />
+                  Reload
+                </Button>
+              </ToolbarItem>
+            </ToolbarGroup>
+          </Toolbar>
+          {error ? (
+            <Alert variant="danger" title="Failed to load graph">
+              {error}
+            </Alert>
+          ) : null}
         </div>
-      </div>
-    </div>
+      }
+    >
+      {loading ? (
+        <div className="flex h-full min-h-[28rem] items-center justify-center text-lumen-muted-foreground">
+          Loading graph…
+        </div>
+      ) : nodes.length === 0 ? (
+        <div className="p-6">
+          <Alert title="No nodes in this brain">
+            Active brain: {activeBrainId}
+            {activeBrainId === "default"
+              ? ". System PAT defaults to default — switch to your ingest brain in the header."
+              : ". If you expected data here, confirm ingest used this same brain id."}
+          </Alert>
+        </div>
+      ) : (
+        <GraphExplorer
+          ariaLabel="Knowledge graph explorer"
+          className="h-full min-h-[32rem]"
+          nodes={nodes}
+          relationships={lumenRelationships}
+          filterState={filterState}
+          onFilterStateChange={setFilterState}
+          selection={selection}
+          onSelectionChange={setSelection}
+          physicsEnabled={physicsEnabled}
+          onPhysicsEnabledChange={setPhysicsEnabled}
+          renderInspector={(context) => {
+            if (context.selection.kind !== "node") {
+              return <GraphInspector {...context} onClose={context.close} />;
+            }
+            const entity = entityById.get(context.selection.id);
+            const node = context.nodes.find((n) => n.id === context.selection.id);
+            return (
+              <aside className="flex h-full flex-col gap-3 overflow-auto border-l border-lumen-border p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h2 className="text-lg font-semibold text-lumen-foreground">
+                      {node?.label ?? entity?.name ?? context.selection.id}
+                    </h2>
+                    <p className="mt-0.5 font-mono text-[10px] text-lumen-muted-foreground">
+                      {context.selection.id}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="ghost"
+                    onClick={context.close}
+                  >
+                    Close
+                  </Button>
+                </div>
+                {node?.labels?.length ? (
+                  <div className="flex flex-wrap gap-1">
+                    {node.labels.map((label) => (
+                      <Tag key={label}>{label}</Tag>
+                    ))}
+                  </div>
+                ) : null}
+                {node?.description ? (
+                  <p className="text-sm text-lumen-muted-foreground">
+                    {node.description}
+                  </p>
+                ) : null}
+                {entity ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    isFullWidth
+                    isPending={expanding}
+                    pendingLabel="Expanding…"
+                    onClick={() => expandNode(entity)}
+                  >
+                    Expand neighbors
+                  </Button>
+                ) : null}
+                <div className="text-xs font-medium uppercase tracking-wide text-lumen-muted-foreground">
+                  Properties
+                </div>
+                <CodeBlock>
+                  {JSON.stringify(node?.properties ?? {}, null, 2)}
+                </CodeBlock>
+              </aside>
+            );
+          }}
+        />
+      )}
+    </Workbench>
   );
-}
-
-function asEntityOrFallback(
-  value: GraphEntity | null | undefined,
-  fallback: GraphEntity | null,
-): GraphEntity {
-  if (value?.uuid) return value;
-  if (fallback) return fallback;
-  throw new Error("missing entity");
 }
