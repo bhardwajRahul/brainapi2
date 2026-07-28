@@ -84,6 +84,7 @@ class BrainAPIClient:
         *,
         observate_for: list[str] | None = None,
         preferred_extraction_entities: list[str] | None = None,
+        source_timestamp: str | None = None,
     ) -> TimedResult:
         body = {
             "data": {"data_type": "text", "text_data": text},
@@ -97,6 +98,8 @@ class BrainAPIClient:
             "preferred_extraction_entities": preferred_extraction_entities
             or ["Person", "Event", "Location", "Date"],
         }
+        if source_timestamp:
+            body["source_timestamp"] = source_timestamp
         return self._request("POST", "/ingest/", json=body)
 
     def get_task(self, task_id: str, brain_id: str) -> TimedResult:

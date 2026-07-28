@@ -1,5 +1,5 @@
 import hashlib
-from typing import Optional
+from typing import Any, Optional
 
 from src.utils.dates import normalize_date_string
 
@@ -59,3 +59,51 @@ def stable_flow_key(
         event_type,
         normalize_date_string(happened_at) if happened_at else None,
     )
+
+
+def merge_source_chunk_ids(*sources: Any) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for source in sources:
+        if source is None:
+            continue
+        if isinstance(source, str):
+            values = [source]
+        elif isinstance(source, (list, tuple, set)):
+            values = list(source)
+        else:
+            values = [source]
+        for value in values:
+            chunk_id = str(value).strip() if value is not None else ""
+            if not chunk_id or chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            merged.append(chunk_id)
+    return merged
+
+
+def stamp_provenance(
+    properties: Optional[dict],
+    *,
+    source_chunk_id: Optional[str] = None,
+    source_timestamp: Optional[str] = None,
+    existing_properties: Optional[dict] = None,
+) -> dict:
+    props = dict(properties or {})
+    existing = existing_properties or {}
+    chunk_ids = merge_source_chunk_ids(
+        existing.get("source_chunk_ids"),
+        existing.get("source_chunk_id"),
+        props.get("source_chunk_ids"),
+        props.get("source_chunk_id"),
+        source_chunk_id,
+    )
+    if chunk_ids:
+        props["source_chunk_ids"] = chunk_ids
+    props.pop("source_chunk_id", None)
+    timestamp = source_timestamp or props.get("source_timestamp") or existing.get(
+        "source_timestamp"
+    )
+    if timestamp:
+        props["source_timestamp"] = timestamp
+    return props

@@ -81,9 +81,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Judge accuracy (excl. adversarial / cat 5): "
         f"**{_pct(metrics.get('headline_judge_accuracy'))}** "
+        f"{_ci(metrics.get('headline_judge_accuracy_ci95'))} "
         f"(n={metrics.get('n_non_adversarial', 0)})",
         f"- Judge accuracy (all categories): "
         f"**{_pct(metrics.get('overall_judge_accuracy'))}** "
+        f"{_ci(metrics.get('overall_judge_accuracy_ci95'))} "
         f"(n={metrics.get('n_total', 0)})",
         f"- Mean F1 (excl. adversarial): "
         f"**{_num(metrics.get('mean_f1_non_adversarial'))}**",
@@ -92,14 +94,15 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Per-category",
         "",
-        "| Category | Name | N | Judge Acc | Mean F1 | Mean BLEU-1 |",
-        "|---|---|---:|---:|---:|---:|",
+        "| Category | Name | N | Judge Acc | 95% CI | Mean F1 | Mean BLEU-1 |",
+        "|---|---|---:|---:|---|---:|---:|",
     ]
     for cat, bucket in (metrics.get("by_category") or {}).items():
         name = CATEGORY_NAMES.get(int(cat), "unknown")
         lines.append(
             f"| {cat} | {name} | {bucket.get('n', 0)} | "
             f"{_pct(bucket.get('judge_accuracy'))} | "
+            f"{_ci(bucket.get('judge_accuracy_ci95'))} | "
             f"{_num(bucket.get('mean_f1'))} | "
             f"{_num(bucket.get('mean_bleu1'))} |"
         )
@@ -156,6 +159,7 @@ def print_report_table(report: dict[str, Any]) -> None:
     table.add_column("Name")
     table.add_column("N", justify="right")
     table.add_column("Judge Acc", justify="right")
+    table.add_column("95% CI")
     table.add_column("F1", justify="right")
     table.add_column("BLEU-1", justify="right")
     for cat, bucket in (metrics.get("by_category") or {}).items():
@@ -164,13 +168,15 @@ def print_report_table(report: dict[str, Any]) -> None:
             CATEGORY_NAMES.get(int(cat), "unknown"),
             str(bucket.get("n", 0)),
             _pct(bucket.get("judge_accuracy")),
+            _ci(bucket.get("judge_accuracy_ci95")),
             _num(bucket.get("mean_f1")),
             _num(bucket.get("mean_bleu1")),
         )
     console.print(table)
     console.print(
         f"Headline judge accuracy (excl. cat 5): "
-        f"[bold]{_pct(metrics.get('headline_judge_accuracy'))}[/bold]"
+        f"[bold]{_pct(metrics.get('headline_judge_accuracy'))}[/bold] "
+        f"{_ci(metrics.get('headline_judge_accuracy_ci95'))}"
     )
     for warning in report.get("warnings") or []:
         console.print(f"[yellow]Warning: {warning}[/yellow]")
@@ -180,6 +186,12 @@ def _pct(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value * 100:.1f}%"
+
+
+def _ci(value: dict[str, float] | None) -> str:
+    if not value or value.get("low") is None or value.get("high") is None:
+        return "n/a"
+    return f"[{_pct(value['low'])}, {_pct(value['high'])}]"
 
 
 def _num(value: float | None) -> str:

@@ -73,6 +73,20 @@ def mean(values: Iterable[float]) -> float | None:
     return sum(vals) / len(vals)
 
 
+def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float | None, float | None]:
+    if n <= 0:
+        return None, None
+    p = successes / n
+    denom = 1.0 + (z * z) / n
+    center = (p + (z * z) / (2.0 * n)) / denom
+    margin = (
+        z
+        * math.sqrt((p * (1.0 - p) / n) + (z * z) / (4.0 * n * n))
+        / denom
+    )
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
 def aggregate_answers(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_category: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
@@ -84,19 +98,27 @@ def aggregate_answers(rows: list[dict[str, Any]]) -> dict[str, Any]:
             return {
                 "n": 0,
                 "judge_accuracy": None,
+                "judge_accuracy_ci95": None,
                 "mean_f1": None,
                 "mean_bleu1": None,
             }
         correct = [1.0 if r.get("judge_correct") else 0.0 for r in items]
+        successes = int(sum(correct))
+        lo, hi = wilson_ci(successes, len(items))
         return {
             "n": len(items),
             "judge_accuracy": mean(correct),
+            "judge_accuracy_ci95": (
+                {"low": lo, "high": hi} if lo is not None and hi is not None else None
+            ),
             "mean_f1": mean(float(r.get("f1") or 0.0) for r in items),
             "mean_bleu1": mean(float(r.get("bleu1") or 0.0) for r in items),
         }
 
     non_adv = [r for r in rows if int(r.get("category") or 0) != 5]
     all_rows = rows
+    non_adv_bucket = _bucket(non_adv)
+    all_bucket = _bucket(all_rows)
     retrieval_latencies = [
         float(r["retrieve_latency_ms"])
         for r in rows
@@ -111,10 +133,12 @@ def aggregate_answers(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "n_total": len(all_rows),
         "n_non_adversarial": len(non_adv),
-        "headline_judge_accuracy": _bucket(non_adv)["judge_accuracy"],
-        "overall_judge_accuracy": _bucket(all_rows)["judge_accuracy"],
-        "mean_f1_non_adversarial": _bucket(non_adv)["mean_f1"],
-        "mean_bleu1_non_adversarial": _bucket(non_adv)["mean_bleu1"],
+        "headline_judge_accuracy": non_adv_bucket["judge_accuracy"],
+        "headline_judge_accuracy_ci95": non_adv_bucket["judge_accuracy_ci95"],
+        "overall_judge_accuracy": all_bucket["judge_accuracy"],
+        "overall_judge_accuracy_ci95": all_bucket["judge_accuracy_ci95"],
+        "mean_f1_non_adversarial": non_adv_bucket["mean_f1"],
+        "mean_bleu1_non_adversarial": non_adv_bucket["mean_bleu1"],
         "by_category": {
             str(cat): _bucket(items) for cat, items in sorted(by_category.items())
         },
@@ -137,4 +161,7 @@ def selftest_metrics() -> list[str]:
         errors.append("article stripping should allow BLEU-1=1")
     if normalize_answer("The Quick, Brown!") != "quick brown":
         errors.append("normalize_answer failed")
+    lo, hi = wilson_ci(5, 10)
+    if lo is None or hi is None or not (0.0 <= lo <= 0.5 <= hi <= 1.0):
+        errors.append("wilson_ci(5,10) should contain 0.5")
     return errors

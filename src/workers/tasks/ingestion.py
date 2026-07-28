@@ -29,6 +29,7 @@ from uuid import uuid4
 from src.core.saving.identity import (
     stable_node_id,
     stable_relationship_id,
+    stamp_provenance,
 )
 
 from pydantic import BaseModel
@@ -190,17 +191,25 @@ def _is_same_graph_node(graph_node: Node, entity) -> bool:
 
 def _normalize_relationship_dates(
     relationships: List[ArchitectAgentRelationship],
+    reference_time: Optional[str] = None,
 ) -> None:
+    from src.utils.dates import resolve_relative_date
+
     for relationship in relationships:
         for entity in (relationship.tail, relationship.tip):
             if (entity.type or "").strip().upper() == "DATE":
-                entity.name = normalize_date_string(entity.name)
+                entity.name = resolve_relative_date(entity.name, reference_time)
             if getattr(entity, "happened_at", None):
-                entity.happened_at = normalize_date_string(entity.happened_at)
+                entity.happened_at = resolve_relative_date(
+                    entity.happened_at, reference_time
+                )
 
 
 def _resolve_relationship_entities(
-    relationships: List[ArchitectAgentRelationship], brain_id: str
+    relationships: List[ArchitectAgentRelationship],
+    brain_id: str,
+    source_chunk_id: Optional[str] = None,
+    source_timestamp: Optional[str] = None,
 ) -> None:
     unique_entities = {}
     for relationship in relationships:
@@ -306,6 +315,25 @@ def _resolve_relationship_entities(
                     entity.name = node.name
                     if getattr(node, "happened_at", None) and not entity.happened_at:
                         entity.happened_at = node.happened_at
+                    existing_props = getattr(node, "properties", None) or {}
+                    entity.properties = stamp_provenance(
+                        entity.properties,
+                        source_chunk_id=source_chunk_id,
+                        source_timestamp=source_timestamp,
+                        existing_properties=existing_props,
+                    )
+                    if getattr(node, "description", None):
+                        entity.description = _merge_description(
+                            node.description, entity.description
+                        )
+                        aliases = list(existing_props.get("aliases") or [])
+                        if entity.name and entity.name not in aliases and entity.name != node.name:
+                            aliases.append(entity.name)
+                        if aliases:
+                            entity.properties = {
+                                **(entity.properties or {}),
+                                "aliases": aliases,
+                            }
 
     _apply_resolutions()
     resolved_uuids = {node.uuid for node in resolutions.values()}
@@ -382,7 +410,22 @@ def _resolve_relationship_entities(
     _apply_resolutions()
 
     for relationship in relationships:
+        relationship.properties = stamp_provenance(
+            relationship.properties,
+            source_chunk_id=source_chunk_id,
+            source_timestamp=source_timestamp,
+        )
+        if source_timestamp and not (relationship.properties or {}).get("valid_at"):
+            relationship.properties = {
+                **(relationship.properties or {}),
+                "valid_at": source_timestamp,
+            }
         for entity in (relationship.tail, relationship.tip):
+            entity.properties = stamp_provenance(
+                entity.properties,
+                source_chunk_id=source_chunk_id,
+                source_timestamp=source_timestamp,
+            )
             if resolutions.get(_entity_key(entity)):
                 continue
             entity.uuid = stable_node_id(
@@ -401,6 +444,65 @@ def _resolve_relationship_entities(
             relationship.tip.uuid,
             relationship.flow_key,
         )
+
+
+def _merge_description(
+    existing: Optional[str], incoming: Optional[str]
+) -> Optional[str]:
+    existing_clean = (existing or "").strip()
+    incoming_clean = (incoming or "").strip()
+    if not existing_clean:
+        return incoming_clean or None
+    if not incoming_clean:
+        return existing_clean
+    if incoming_clean.lower() in existing_clean.lower():
+        return existing_clean
+    if existing_clean.lower() in incoming_clean.lower():
+        return incoming_clean
+    return f"{existing_clean} | {incoming_clean}"
+
+
+def _invalidate_superseded_relationships(
+    relationship: ArchitectAgentRelationship,
+    *,
+    brain_id: str,
+) -> None:
+    """Mark older same-type edges from the same subject as invalid when tip changes."""
+    try:
+        neighbors = graph_adapter.get_neighbors(
+            [relationship.tail.uuid], brain_id=brain_id
+        )
+    except Exception:
+        return
+    pairs = (neighbors or {}).get(relationship.tail.uuid) or []
+    valid_at = (relationship.properties or {}).get("valid_at") or (
+        relationship.properties or {}
+    ).get("source_timestamp")
+    for predicate, neighbor in pairs:
+        if not predicate or not neighbor:
+            continue
+        if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
+            continue
+        if neighbor.uuid == relationship.tip.uuid:
+            continue
+        if getattr(predicate, "uuid", None) == relationship.uuid:
+            continue
+        props = getattr(predicate, "properties", None) or {}
+        if props.get("invalid_at"):
+            continue
+        try:
+            graph_adapter.update_properties(
+                predicate.uuid,
+                "relationship",
+                brain_id=brain_id,
+                new_properties={
+                    "invalid_at": valid_at
+                    or datetime.datetime.utcnow().strftime("%d/%m/%Y"),
+                    "deprecated": True,
+                },
+            )
+        except Exception as exc:
+            print(f"[!] Failed to invalidate relationship {predicate.uuid}: {exc}")
 
 def format_textual_data(data: dict, include_keys: bool = True) -> str:
     def format_value(v):
@@ -511,7 +613,13 @@ def ingest_data(self, args: dict):
                 brain_id=payload.brain_id,
             )
 
-        enrich_result = enrich_kg_from_input(source_text, brain_id=payload.brain_id)
+        enrich_result = enrich_kg_from_input(
+            source_text,
+            brain_id=payload.brain_id,
+            source_chunk_id=text_chunk.id,
+            source_timestamp=payload.source_timestamp,
+            preferred_extraction_entities=payload.preferred_extraction_entities,
+        )
         parent_task_id = self.request.id
         steps = []
         if enrich_result.enrichment_relationships:
@@ -643,8 +751,25 @@ def process_architect_relationships(self, args: dict):
         relationships = [
             ArchitectAgentRelationship(**rel_data) for rel_data in relationships_data
         ]
-        _normalize_relationship_dates(relationships)
-        _resolve_relationship_entities(relationships, brain_id)
+        reference_time = None
+        source_chunk_id = None
+        for rel in relationships:
+            props = rel.properties or {}
+            if not reference_time:
+                reference_time = props.get("source_timestamp") or props.get("valid_at")
+            if not source_chunk_id:
+                ids = props.get("source_chunk_ids") or []
+                if ids:
+                    source_chunk_id = ids[-1]
+                elif props.get("source_chunk_id"):
+                    source_chunk_id = props.get("source_chunk_id")
+        _normalize_relationship_dates(relationships, reference_time=reference_time)
+        _resolve_relationship_entities(
+            relationships,
+            brain_id,
+            source_chunk_id=source_chunk_id,
+            source_timestamp=reference_time,
+        )
 
         item_errors: List[dict] = []
         with ThreadPoolExecutor(max_workers=10) as io_executor:
@@ -842,6 +967,10 @@ def process_architect_relationships(self, args: dict):
                                 **(relationship.tip.properties or {}),
                             },
                         ),
+                        brain_id=brain_id,
+                    )
+                    _invalidate_superseded_relationships(
+                        relationship,
                         brain_id=brain_id,
                     )
                 except FutureTimeoutError:

@@ -135,7 +135,11 @@ def ingest_samples(
 
         with BrainAPIClient(settings) as client:
             try:
-                submitted = client.ingest_text(unit["text"], job["brain_id"])
+                submitted = client.ingest_text(
+                    unit["text"],
+                    job["brain_id"],
+                    source_timestamp=unit.get("source_timestamp"),
+                )
                 task_id = (submitted.data or {}).get("task_id")
                 if not task_id:
                     raise RuntimeError(f"No task_id in ingest response: {submitted.data}")

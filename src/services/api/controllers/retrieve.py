@@ -20,6 +20,7 @@ from src.constants.embeddings import Vector
 from src.constants.kg import IdentificationParams, Node, Predicate
 from src.core.search.entities import search_entities
 from src.core.search.entity_info import EventSynergyRetriever, MatchPath
+from src.core.search.fact_filter import filter_relevant_facts, reciprocal_rank_fusion
 from src.core.search.relationships import search_relationships
 from src.utils.vector_search import VectorSearchFacade
 from src.services.api.constants.requests import (
@@ -41,6 +42,8 @@ vector_search = VectorSearchFacade(vector_store_adapter)
 _MAX_NOUN_CHUNKS = 5
 _MAX_DOSSIER_ENTITIES = 5
 _DOSSIER_MAX_DEPTH = 3
+_SEED_K = 20
+_PASSAGE_K = 12
 
 
 async def retrieve_data(
@@ -405,6 +408,15 @@ def _fact_key(r: Predicate, r2: Predicate) -> tuple[str, str]:
     return (getattr(r, "uuid", None) or "", getattr(r2, "uuid", None) or "")
 
 
+def _is_currently_valid(predicate: Predicate) -> bool:
+    props = getattr(predicate, "properties", None) or {}
+    if props.get("invalid_at"):
+        return False
+    if getattr(predicate, "deprecated", False):
+        return False
+    return True
+
+
 def _collect_query_variants(text: str, elements) -> list[str]:
     seen: set[str] = set()
     variants: list[str] = []
@@ -446,6 +458,7 @@ def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str
     node_vectors = vector_search.search_nodes(
         embeddings,
         brain_id=brain_id,
+        k=_SEED_K,
     )
     for vector in node_vectors:
         meta = vector.metadata or {}
@@ -461,6 +474,7 @@ def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str
     rel_vectors = vector_search.search_relationships(
         embeddings,
         brain_id=brain_id,
+        k=_SEED_K,
     )
     for vector in rel_vectors:
         meta = vector.metadata or {}
@@ -473,6 +487,86 @@ def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str
                 seeds.append((str(node_id), float(distance), text))
 
     return seeds
+
+
+def _extract_source_chunk_ids(*items: Any) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        props = getattr(item, "properties", None) or {}
+        for value in props.get("source_chunk_ids") or []:
+            chunk_id = str(value).strip()
+            if chunk_id and chunk_id not in seen:
+                seen.add(chunk_id)
+                ids.append(chunk_id)
+        single = props.get("source_chunk_id")
+        if single:
+            chunk_id = str(single).strip()
+            if chunk_id and chunk_id not in seen:
+                seen.add(chunk_id)
+                ids.append(chunk_id)
+    return ids
+
+
+def _retrieve_passages(
+    text: str, brain_id: str, *, limit: int
+) -> list[tuple[str, float, str]]:
+    """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
+    text_embeddings = embeddings_adapter.embed_text(text)
+    vector_hits = vector_search.search_data(
+        text_embeddings.embeddings,
+        brain_id=brain_id,
+        k=max(limit, _PASSAGE_K),
+    )
+    vector_ids: list[str] = []
+    id_to_text: dict[str, str] = {}
+    id_to_distance: dict[str, float] = {}
+    for vector in vector_hits:
+        meta = vector.metadata or {}
+        resource_id = meta.get("resource_id") or getattr(vector, "id", None)
+        if not resource_id:
+            continue
+        resource_id = str(resource_id)
+        vector_ids.append(resource_id)
+        id_to_distance[resource_id] = (
+            float(vector.distance)
+            if vector.distance is not None
+            else float("inf")
+        )
+
+    keyword_ids: list[str] = []
+    try:
+        search_result = data_adapter.search(text, brain_id)
+        for chunk in getattr(search_result, "text_chunks", None) or []:
+            chunk_id = str(getattr(chunk, "id", "") or "")
+            if not chunk_id:
+                continue
+            keyword_ids.append(chunk_id)
+            id_to_text[chunk_id] = getattr(chunk, "text", "") or ""
+    except Exception:
+        pass
+
+    fused = reciprocal_rank_fusion([vector_ids, keyword_ids])
+    ranked_ids = [item for item, _ in fused[:limit]]
+    missing = [cid for cid in ranked_ids if cid not in id_to_text]
+    if missing:
+        try:
+            chunks, _ = data_adapter.get_text_chunks_by_ids(
+                missing, False, brain_id
+            )
+            for chunk in chunks:
+                id_to_text[str(chunk.id)] = chunk.text or ""
+        except Exception:
+            pass
+
+    passages: list[tuple[str, float, str]] = []
+    for chunk_id in ranked_ids:
+        body = (id_to_text.get(chunk_id) or "").strip()
+        if not body:
+            continue
+        score = id_to_distance.get(chunk_id, 1.0 / (1.0 + len(passages)))
+        passages.append((chunk_id, float(score), body))
+    return passages
 
 
 def _flatten_match_path(path: MatchPath) -> list[str]:
@@ -499,22 +593,16 @@ def _flatten_match_path(path: MatchPath) -> list[str]:
 async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     """
     Retrieve contextual information for a text.
-
-    Parameters:
-        request (GetContextRequestBody): Request body containing:
-            - text: The text to search context for.
-            - brain_id: The brain/workspace identifier to query.
-
-    Returns:
-        GetContextResponse: Response containing the context information.
     """
 
     elements = _entity_extractor.extract_elements(request.text)
     variants = _collect_query_variants(request.text, elements)
     historical_context: list[str] = []
+    source_passages: list[str] = []
     candidate_lock = threading.Lock()
     candidates: list[dict[str, Any]] = []
     seed_hits: list[tuple[str, float, str]] = []
+    passage_hits: list[tuple[str, float, str]] = []
 
     def _collect_facts_for_variant(text: str) -> None:
         seeds = _seed_nodes_for_text(text, request.brain_id)
@@ -533,6 +621,8 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
         )
         local: list[dict[str, Any]] = []
         for n, r, m, r2, b in neighbors:
+            if not _is_currently_valid(r) or not _is_currently_valid(r2):
+                continue
             distances = [
                 uuid_to_distance[u]
                 for u in (
@@ -549,14 +639,33 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
                     "triple": (n, r, m, r2, b),
                     "score": score,
                     "key": _fact_key(r, r2),
+                    "text": _format_event_fact(n, r, m, r2, b),
+                    "chunk_ids": _extract_source_chunk_ids(n, r, m, r2, b),
                 }
             )
         if local:
             with candidate_lock:
                 candidates.extend(local)
 
+    def _collect_passages() -> None:
+        nonlocal passage_hits
+        passage_hits = _retrieve_passages(
+            request.text,
+            request.brain_id,
+            limit=max(1, int(getattr(request, "max_passages", 8) or 8)),
+        )
+
     async def _get_historical_context():
         nonlocal historical_context
+        passages = await asyncio.to_thread(
+            _retrieve_passages,
+            request.text,
+            request.brain_id,
+            limit=max(request.historical_limit, _PASSAGE_K),
+        )
+        if passages:
+            historical_context = [text for _, _, text in passages[: request.historical_limit]]
+            return historical_context
         text_chunks, structured_data = await asyncio.gather(
             asyncio.to_thread(
                 data_adapter.get_last_text_chunks,
@@ -579,6 +688,7 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
     futures = [
         asyncio.to_thread(_collect_facts_for_variant, variant) for variant in variants
     ]
+    futures.append(asyncio.to_thread(_collect_passages))
     futures.append(_get_historical_context())
     await asyncio.gather(*futures)
 
@@ -591,19 +701,56 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
 
     ranked = sorted(deduped.values(), key=lambda c: c["score"])
     max_facts = max(1, int(getattr(request, "max_facts", 40) or 40))
-    curated = ranked[:max_facts]
+
+    if getattr(request, "apply_fact_filter", True) and ranked:
+        keep = filter_relevant_facts(
+            request.text,
+            [c["text"] for c in ranked],
+            max_keep=max_facts,
+        )
+        curated = [ranked[i] for i in keep if 0 <= i < len(ranked)]
+        if not curated:
+            curated = ranked[:max_facts]
+    else:
+        curated = ranked[:max_facts]
 
     text_lines: list[str] = []
     triples: list[GetContextTriple] = []
+    provenance_ids: list[str] = []
     for candidate in curated:
         n, r, m, r2, b = candidate["triple"]
-        text_lines.append(_format_event_fact(n, r, m, r2, b))
+        text_lines.append(candidate["text"])
         triples.append(
             GetContextTriple(
                 identified_entity=candidate["identified_entity"],
                 triple=(n, r, m, r2, b),
             )
         )
+        provenance_ids.extend(candidate.get("chunk_ids") or [])
+
+    for chunk_id, _, body in passage_hits:
+        if body and body not in source_passages:
+            source_passages.append(body)
+        if chunk_id not in provenance_ids:
+            provenance_ids.append(chunk_id)
+
+    if provenance_ids:
+        try:
+            chunks, _ = await asyncio.to_thread(
+                data_adapter.get_text_chunks_by_ids,
+                provenance_ids[:40],
+                False,
+                request.brain_id,
+            )
+            for chunk in chunks:
+                body = (chunk.text or "").strip()
+                if body and body not in source_passages:
+                    source_passages.append(body)
+        except Exception:
+            pass
+
+    max_passages = max(1, int(getattr(request, "max_passages", 8) or 8))
+    source_passages = source_passages[:max_passages]
 
     entity_scores: dict[str, float] = {}
     for _uuid, distance, entity_name in seed_hits:
@@ -648,10 +795,12 @@ async def get_context(request: GetContextRequestBody) -> GetContextResponse:
 
         dossier_lines = await asyncio.to_thread(_run_dossiers)
 
-    text_context = "\n".join(text_lines + dossier_lines)
+    passage_block = [f"[passage] {p}" for p in source_passages]
+    text_context = "\n".join(passage_block + text_lines + dossier_lines)
 
     return GetContextResponse(
         text_context=text_context,
         triples=triples,
         historical_context=historical_context,
+        source_passages=source_passages,
     )

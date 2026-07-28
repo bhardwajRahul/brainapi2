@@ -141,6 +141,8 @@ SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT = """
 Carefully read the text and extract ALL the entities, unique action instances (events), and quantitative units.
 
 {targeting}
+{reference_time}
+{preferred_entities}
 
 Text: {text}
 
@@ -149,6 +151,7 @@ OUTPUT RULES:
 - Each object must include: "type", "name", and optional "properties" and "description".
 - Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
 - Dates must be in the format "DD/MM/YYYY" and be stored as "happened_at" in the properties of the event nodes.
+- When the reference date is provided, resolve relative dates (yesterday, last week, last Tuesday, etc.) against it into absolute DD/MM/YYYY values.
 - You must extract ALL the building blocks without omitting any concepts.
 
 Begin!
@@ -159,6 +162,8 @@ Carefully read the text and extract the most important entities that can be used
 the unique action instances (events), and the quantitative units.
 
 {targeting}
+{reference_time}
+{preferred_entities}
 
 Text: {text}
 
@@ -167,6 +172,7 @@ OUTPUT RULES:
 - Each object must include: "type", "name", and optional "properties" and "description".
 - Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
 - Dates must be in the format "DD/MM/YYYY" and be stored as "happened_at" in the properties of the event nodes.
+- When the reference date is provided, resolve relative dates (yesterday, last week, last Tuesday, etc.) against it into absolute DD/MM/YYYY values.
 - You must extract the most important entities that can be used to reconstruct a meaningful narrative,
 the unique action instances (events), and the quantitative units without omitting any concepts.
 

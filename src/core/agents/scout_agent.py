@@ -40,6 +40,7 @@ from src.constants.prompts.scout_agent import (
 from src.core.agents.core import parse_structured_from_messages, runtime_agent_factory
 from src.core.plugins.prompts import prompt_registry
 from src.services.api.constants.requests import IngestionTripleSet
+from src.utils.text_chunking import chunk_text as _chunk_text
 
 
 class _ScoutEntity(BaseModel):
@@ -338,26 +339,60 @@ class ScoutAgent:
         max_retries: int = 3,
         ingestion_session_id: Optional[str] = None,
         mode: Literal["granular", "coarse"] = "granular",
+        reference_time: Optional[str] = None,
+        preferred_extraction_entities: Optional[List[str]] = None,
+        max_chars_per_chunk: int = 6000,
+    ) -> ScoutAgentResponse:
+        chunks = _chunk_text(text, max_chars=max_chars_per_chunk)
+        if len(chunks) == 1:
+            return self._run_chunk(
+                chunks[0],
+                targeting=targeting,
+                brain_id=brain_id,
+                timeout=timeout,
+                max_retries=max_retries,
+                ingestion_session_id=ingestion_session_id,
+                mode=mode,
+                reference_time=reference_time,
+                preferred_extraction_entities=preferred_extraction_entities,
+            )
+        merged: dict[str, ScoutEntity] = {}
+        for chunk in chunks:
+            response = self._run_chunk(
+                chunk,
+                targeting=targeting,
+                brain_id=brain_id,
+                timeout=timeout,
+                max_retries=max_retries,
+                ingestion_session_id=ingestion_session_id,
+                mode=mode,
+                reference_time=reference_time,
+                preferred_extraction_entities=preferred_extraction_entities,
+            )
+            for entity in response.entities:
+                key = (
+                    (entity.name or "").strip().lower(),
+                    (entity.type or "").strip().lower(),
+                    getattr(entity, "happened_at", None) or "",
+                )
+                if key not in merged:
+                    merged[key] = entity
+        return ScoutAgentResponse(entities=list(merged.values()))
+
+    def _run_chunk(
+        self,
+        text: str,
+        targeting: Optional[Node] = None,
+        brain_id: str = "default",
+        timeout: int = 300,
+        max_retries: int = 3,
+        ingestion_session_id: Optional[str] = None,
+        mode: Literal["granular", "coarse"] = "granular",
+        reference_time: Optional[str] = None,
+        preferred_extraction_entities: Optional[List[str]] = None,
     ) -> ScoutAgentResponse:
         """
         Extract entities from the provided text using the Scout agent and return a structured response containing the entities.
-
-        Performs an LLM invocation (with optional targeting context), applies retries with exponential backoff on timeouts, and enforces a per-invocation timeout.
-
-        Parameters:
-            text: The input text to extract entities from.
-            targeting: Optional Node providing contextual targeting information (name, description, properties) to bias extraction.
-            brain_id: Identifier for the agent/brain configuration to use.
-            timeout: Maximum seconds to wait for a single agent invocation before treating it as a timeout.
-            max_retries: Maximum number of retry attempts for timed-out invocations using exponential backoff.
-            ingestion_session_id: Identifier for the ingestion session to use.
-            mode: Mode to use for the scout agent. "granular" for a more granular extraction, "coarse" to extract the most important entities only.
-        Returns:
-            A ScoutAgentResponse containing:
-                - entities: list of extracted ScoutEntity objects.
-
-        Raises:
-            TimeoutError: If a single invocation exceeds `timeout`, or if all retry attempts fail due to timeouts.
         """
         self._get_agent(
             output_schema=_ScoutAgentResponse,
@@ -374,6 +409,17 @@ class ScoutAgent:
             if targeting
             else ""
         )
+        reference_time_str = (
+            f"Reference date for resolving relative dates: {reference_time}"
+            if reference_time
+            else ""
+        )
+        preferred_str = (
+            "Prefer extracting these entity types when present: "
+            + ", ".join(preferred_extraction_entities)
+            if preferred_extraction_entities
+            else ""
+        )
         if mode == "granular":
             prompt = prompt_registry.get(
                 "SCOUT_AGENT_EXTRACT_ENTITIES_PROMPT",
@@ -381,6 +427,8 @@ class ScoutAgent:
             ).format(
                 text=text,
                 targeting=targeting_str,
+                reference_time=reference_time_str,
+                preferred_entities=preferred_str,
             )
         elif mode == "coarse":
             prompt = prompt_registry.get(
@@ -389,6 +437,8 @@ class ScoutAgent:
             ).format(
                 text=text,
                 targeting=targeting_str,
+                reference_time=reference_time_str,
+                preferred_entities=preferred_str,
             )
         else:
             raise ValueError(f"Invalid mode for scout agent: {mode}")
@@ -424,15 +474,6 @@ class ScoutAgent:
             reraise=True,
         )
         def _invoke_agent_with_retry():
-            """
-            Invoke the agent in a separate thread and enforce the configured timeout.
-
-            Returns:
-                dict: The agent response dictionary.
-
-            Raises:
-                TimeoutError: If the agent invocation exceeds the specified timeout.
-            """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(_invoke_agent)

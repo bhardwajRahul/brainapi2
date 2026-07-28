@@ -52,7 +52,7 @@ class NetworkXUpsertContractTests(unittest.TestCase):
         self.assertEqual(second, "alice-1")
         self.assertEqual(len(list(brain.graph.nodes)), 1)
         self.assertEqual(brain.node_data("alice-1")["uuid"], "alice-1")
-        self.assertEqual(brain.node_data("alice-1")["description"], "v2")
+        self.assertEqual(brain.node_data("alice-1")["description"], "v1 | v2")
 
     def test_same_name_different_uuid_does_not_overwrite_existing_uuid(self):
         from src.lib.postgresql.graph_store import _BrainGraph

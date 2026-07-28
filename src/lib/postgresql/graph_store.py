@@ -95,7 +95,29 @@ class _BrainGraph:
         merged = {}
         if match_uuid in self.graph:
             merged.update(self.node_data(match_uuid))
-        merged.update(properties)
+        incoming = dict(properties)
+        if "description" in incoming and merged.get("description"):
+            existing_desc = str(merged.get("description") or "").strip()
+            incoming_desc = str(incoming.get("description") or "").strip()
+            if existing_desc and incoming_desc and incoming_desc.lower() not in existing_desc.lower():
+                if existing_desc.lower() not in incoming_desc.lower():
+                    incoming["description"] = f"{existing_desc} | {incoming_desc}"
+                else:
+                    incoming["description"] = incoming_desc
+            elif existing_desc and not incoming_desc:
+                incoming["description"] = existing_desc
+        for list_key in ("source_chunk_ids", "aliases"):
+            if list_key in incoming or list_key in merged:
+                seen = []
+                for value in list(merged.get(list_key) or []) + list(
+                    incoming.get(list_key) or []
+                ):
+                    item = str(value).strip()
+                    if item and item not in seen:
+                        seen.append(item)
+                if seen:
+                    incoming[list_key] = seen
+        merged.update(incoming)
         if identification.get("name") is not None:
             merged["name"] = identification.get("name")
         merged["labels"] = labels or merged.get("labels") or []

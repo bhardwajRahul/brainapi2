@@ -128,6 +128,7 @@ def iter_ingest_units(
                     "unit_id": key,
                     "session_key": key,
                     "text": format_session(conversation, key),
+                    "source_timestamp": conversation.get(f"{key}_date_time"),
                 }
             )
         return units
@@ -144,6 +145,7 @@ def iter_ingest_units(
                         "session_key": key,
                         "dia_id": dia_id,
                         "text": format_turn_unit(conversation, key, turn),
+                        "source_timestamp": conversation.get(f"{key}_date_time"),
                     }
                 )
         return units

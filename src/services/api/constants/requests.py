@@ -394,6 +394,8 @@ class GetContextRequestBody(BaseModel):
     brain_id: str = "default"
     historical_limit: int = 10
     max_facts: int = 40
+    max_passages: int = 8
+    apply_fact_filter: bool = True
 
 
 class GetContextTriple(BaseModel):
@@ -409,3 +411,4 @@ class GetContextResponse(BaseModel):
     text_context: str
     triples: List[GetContextTriple]
     historical_context: List[str] = []
+    source_passages: List[str] = []

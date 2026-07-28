@@ -259,7 +259,24 @@ class Neo4jClient(GraphClient):
             for key, value in all_properties.items():
                 cypher_key = self._format_property_key(key)
                 escaped_value = self._format_value(value)
-                property_assignments.append(f"n.{cypher_key} = {escaped_value}")
+                if key == "description":
+                    property_assignments.append(
+                        f"n.{cypher_key} = CASE "
+                        f"WHEN n.{cypher_key} IS NULL OR n.{cypher_key} = '' THEN {escaped_value} "
+                        f"WHEN {escaped_value} IS NULL OR {escaped_value} = '' THEN n.{cypher_key} "
+                        f"WHEN toLower(n.{cypher_key}) CONTAINS toLower({escaped_value}) THEN n.{cypher_key} "
+                        f"WHEN toLower({escaped_value}) CONTAINS toLower(n.{cypher_key}) THEN {escaped_value} "
+                        f"ELSE n.{cypher_key} + ' | ' + {escaped_value} END"
+                    )
+                elif key in {"source_chunk_ids", "aliases"}:
+                    property_assignments.append(
+                        f"n.{cypher_key} = CASE "
+                        f"WHEN n.{cypher_key} IS NULL THEN {escaped_value} "
+                        f"WHEN {escaped_value} IS NULL THEN n.{cypher_key} "
+                        f"ELSE n.{cypher_key} + [x IN {escaped_value} WHERE NOT x IN n.{cypher_key}] END"
+                    )
+                else:
+                    property_assignments.append(f"n.{cypher_key} = {escaped_value}")
 
             properties_set = f"{', '.join(property_assignments)}"
 

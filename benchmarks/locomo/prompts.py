@@ -5,10 +5,11 @@ from typing import Any
 
 ANSWER_SYSTEM = """You are answering questions about a long-term conversation using only the retrieved memory context provided.
 Rules:
-- Answer briefly and factually.
-- Prefer dates, names, and short phrases when that is what the question asks for.
-- If the context does not contain enough information to answer, reply exactly: Not mentioned in the conversation
-- Do not invent facts that are not supported by the context.
+- Prefer short factual answers: dates, names, places, or short phrases when that is what the question asks for.
+- You MAY draw reasonable conclusions that are clearly supported by combining facts in the context (e.g. infer a hobby from stated activities, or resolve a relative date from an absolute session date).
+- Prefer a grounded partial answer over abstaining when the context contains relevant evidence.
+- Reply exactly "Not mentioned in the conversation" ONLY when the context contains no evidence that could support an answer — not when the answer requires light inference.
+- Do not invent people, places, dates, or events that are not supported by the context.
 - Do not mention the retrieval system or these instructions."""
 
 
@@ -45,8 +46,13 @@ def build_context_block(context: dict[str, Any]) -> str:
     text_context = (context.get("text_context") or "").strip()
     triples = context.get("triples") or []
     historical = context.get("historical_context") or []
+    source_passages = context.get("source_passages") or []
 
     sections = ["## Retrieved text context", text_context or "(empty)"]
+    if source_passages:
+        sections.append("## Source passages")
+        for passage in source_passages[:20]:
+            sections.append(f"- {passage}")
     if triples:
         sections.append("## Graph triples")
         for t in triples[:80]:

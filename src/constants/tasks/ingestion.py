@@ -78,3 +78,10 @@ class IngestionTaskArgs(BaseModel):
     brain_id: str = Field(
         default="default", description="The brain identifier to store the data in."
     )
+    source_timestamp: Optional[str] = Field(
+        default=None,
+        description=(
+            "Reference timestamp for the source content (e.g. session date). "
+            "Used to resolve relative dates like 'yesterday' into absolute dates."
+        ),
+    )

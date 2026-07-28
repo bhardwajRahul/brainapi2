@@ -39,7 +39,12 @@ class EnrichmentOrchestrationResult:
 
 
 def enrich_kg_from_input(
-    input: str, targeting: Optional[Node] = None, brain_id: str = "default"
+    input: str,
+    targeting: Optional[Node] = None,
+    brain_id: str = "default",
+    source_chunk_id: Optional[str] = None,
+    source_timestamp: Optional[str] = None,
+    preferred_extraction_entities: Optional[List[str]] = None,
 ) -> EnrichmentOrchestrationResult:
     """
     Orchestrates enrichment of the knowledge graph from a free-text input.
@@ -58,14 +63,32 @@ def enrich_kg_from_input(
             "ingestion_session_id": ingestion_session_id,
             "brain_id": brain_id,
             "flow": "enrich_kg_from_input",
+            "source_chunk_id": source_chunk_id,
+            "source_timestamp": source_timestamp,
         },
     ):
-        return _enrich_kg_impl(input, targeting, brain_id, ingestion_session_id)
+        return _enrich_kg_impl(
+            input,
+            targeting,
+            brain_id,
+            ingestion_session_id,
+            source_chunk_id=source_chunk_id,
+            source_timestamp=source_timestamp,
+            preferred_extraction_entities=preferred_extraction_entities,
+        )
 
 
 def _enrich_kg_impl(
-    input, targeting, brain_id: str, ingestion_session_id: str
+    input,
+    targeting,
+    brain_id: str,
+    ingestion_session_id: str,
+    source_chunk_id: Optional[str] = None,
+    source_timestamp: Optional[str] = None,
+    preferred_extraction_entities: Optional[List[str]] = None,
 ) -> EnrichmentOrchestrationResult:
+    from src.core.saving.identity import stamp_provenance
+
     ingestion_manager = IngestionManager(
         embeddings_adapter, vector_store_adapter, graph_adapter
     )
@@ -95,6 +118,8 @@ def _enrich_kg_impl(
         brain_id=brain_id,
         ingestion_session_id=ingestion_session_id,
         mode=("coarse" if mode == "coarse" else "granular"),
+        reference_time=source_timestamp,
+        preferred_extraction_entities=preferred_extraction_entities,
     )
     print("[DEBUG (initial_scout_entities)]: ", entities.entities)
     architect_agent.run_tooler(
@@ -108,9 +133,23 @@ def _enrich_kg_impl(
     )
 
     pending = architect_agent.take_pending_relationships()
-    enrichment_relationships = [
-        rel.model_dump(mode="json") for rel in pending
-    ]
+    enrichment_relationships = []
+    for rel in pending:
+        payload = rel.model_dump(mode="json")
+        payload["properties"] = stamp_provenance(
+            payload.get("properties"),
+            source_chunk_id=source_chunk_id,
+            source_timestamp=source_timestamp,
+        )
+        for endpoint_key in ("tail", "tip"):
+            endpoint = payload.get(endpoint_key) or {}
+            endpoint["properties"] = stamp_provenance(
+                endpoint.get("properties"),
+                source_chunk_id=source_chunk_id,
+                source_timestamp=source_timestamp,
+            )
+            payload[endpoint_key] = endpoint
+        enrichment_relationships.append(payload)
     should_consolidate = bool(
         config.pipeline_mode == "accurate"
         and config.run_graph_consolidator
