@@ -5,6 +5,24 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: "/console/",
+  optimizeDeps: {
+    exclude: ["lumen-ui-kit/graph"],
+    include: [
+      "prop-types",
+      "react-is",
+      "@carbon/icon-helpers",
+      "@carbon/icons-react",
+      "events",
+      "graphology",
+      "graphology-utils",
+      "graphology-indices",
+      "graphology-layout-forceatlas2",
+      "graphology-layout-noverlap",
+      "graphology-communities-louvain",
+      "mnemonist",
+      "pandemonium",
+    ],
+  },
   server: {
     port: 5173,
     proxy: {
