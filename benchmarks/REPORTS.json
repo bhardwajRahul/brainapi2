@@ -1,0 +1,164 @@
+{
+  "schema_version": 2,
+  "updated_at": "2026-07-29T18:51:58.401379+00:00",
+  "description": "BrainAPI benchmark results. Top published scores across suites. Updated when a suite evaluate/report completes successfully.",
+  "benchmarks": {
+    "locomo": {
+      "name": "LoCoMo",
+      "leaderboard": [
+        {
+          "run_id": "oldbrain-recheck-a",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8552631578947368,
+          "headline_judge_accuracy_pct": 85.53,
+          "answerable_rate": 0.9473684210526315,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/oldbrain-recheck-a/report.json",
+          "recorded_at": "2026-07-28T22:05:39.768798+00:00"
+        },
+        {
+          "run_id": "phase-sota-d1-conv26",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8486842105263158,
+          "headline_judge_accuracy_pct": 84.87,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26clean",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/phase-sota-d1-conv26/report.json",
+          "recorded_at": "2026-07-29T18:51:58.400341+00:00"
+        },
+        {
+          "run_id": "clean-brain-eval-a",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8355263157894737,
+          "headline_judge_accuracy_pct": 83.55,
+          "answerable_rate": 0.9539473684210527,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26clean",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/clean-brain-eval-a/report.json",
+          "recorded_at": "2026-07-28T21:29:30.713806+00:00"
+        },
+        {
+          "run_id": "graph-stable-b",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8355263157894737,
+          "headline_judge_accuracy_pct": 83.55,
+          "answerable_rate": 0.9671052631578947,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26clean",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/graph-stable-b/report.json",
+          "recorded_at": "2026-07-29T10:59:22.348091+00:00"
+        },
+        {
+          "run_id": "clean-brain-a",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8289473684210527,
+          "headline_judge_accuracy_pct": 82.89,
+          "answerable_rate": 0.9473684210526315,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26clean",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/clean-brain-a/report.json",
+          "recorded_at": "2026-07-28T21:57:06.650866+00:00"
+        },
+        {
+          "run_id": "clean-brain-b",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8289473684210527,
+          "headline_judge_accuracy_pct": 82.89,
+          "answerable_rate": 0.9473684210526315,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26clean",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/clean-brain-b/report.json",
+          "recorded_at": "2026-07-28T22:13:25.651713+00:00"
+        },
+        {
+          "run_id": "baseline-clean-a",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8223684210526315,
+          "headline_judge_accuracy_pct": 82.24,
+          "answerable_rate": 0.9473684210526315,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/baseline-clean-a/report.json",
+          "recorded_at": "2026-07-28T18:18:19.581660+00:00"
+        },
+        {
+          "run_id": "phase-d1-paths-a",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8092105263157895,
+          "headline_judge_accuracy_pct": 80.92,
+          "answerable_rate": 0.9671052631578947,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26clean",
+          "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
+          "report_path": "runs/phase-d1-paths-a/report.json",
+          "recorded_at": "2026-07-29T16:26:21.919353+00:00"
+        }
+      ]
+    }
+  }
+}

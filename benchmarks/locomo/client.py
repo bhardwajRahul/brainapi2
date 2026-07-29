@@ -137,11 +137,23 @@ class BrainAPIClient:
         brain_id: str,
         *,
         historical_limit: int = 10,
+        max_passages: int = 8,
+        max_facts: int = 40,
+        apply_fact_filter: bool = True,
+        use_ppr: bool = False,
+        sufficiency_retry: bool = False,
+        cross_event_bridges: int = 3,
     ) -> TimedResult:
-        body = {
+        body: dict[str, Any] = {
             "text": text,
             "brain_id": brain_id,
             "historical_limit": historical_limit,
+            "max_passages": max_passages,
+            "max_facts": max_facts,
+            "apply_fact_filter": apply_fact_filter,
+            "use_ppr": use_ppr,
+            "sufficiency_retry": sufficiency_retry,
+            "cross_event_bridges": cross_event_bridges,
         }
         return self._request("POST", "/retrieve/context", json=body)
 

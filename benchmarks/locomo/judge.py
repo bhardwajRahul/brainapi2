@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 
 from locomo.config import Settings
 from locomo.prompts import build_judge_messages
@@ -24,11 +24,17 @@ class JudgeResult:
     total_tokens: int | None
 
 
-def _make_openai_client(settings: Settings) -> OpenAI:
-    settings.require_llm()
-    kwargs: dict[str, Any] = {"api_key": settings.openai_api_key}
-    if settings.llm_base_url:
-        kwargs["base_url"] = settings.llm_base_url
+def _make_openai_client(settings: Settings) -> OpenAI | AzureOpenAI:
+    settings.require_judge_llm()
+    if settings.judge_azure_endpoint:
+        return AzureOpenAI(
+            api_key=settings.judge_api_key,
+            azure_endpoint=settings.judge_azure_endpoint,
+            api_version=settings.judge_azure_api_version,
+        )
+    kwargs: dict[str, Any] = {"api_key": settings.judge_api_key}
+    if settings.judge_base_url:
+        kwargs["base_url"] = settings.judge_base_url
     return OpenAI(**kwargs)
 
 
@@ -60,10 +66,13 @@ def judge_answer(
     prediction: str,
     *,
     model: str | None = None,
+    adversarial: bool = False,
 ) -> JudgeResult:
     client = _make_openai_client(settings)
     model_name = model or settings.judge_model
-    messages = build_judge_messages(question, gold, prediction)
+    messages = build_judge_messages(
+        question, gold, prediction, adversarial=adversarial
+    )
     started = time.perf_counter()
     response = client.chat.completions.create(
         model=model_name,
@@ -79,7 +88,7 @@ def judge_answer(
         correct=correct,
         reason=reason,
         raw=raw,
-        model=model_name,
+        model=getattr(response, "model", None) or model_name,
         latency_ms=latency_ms,
         prompt_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
         completion_tokens=getattr(usage, "completion_tokens", None) if usage else None,

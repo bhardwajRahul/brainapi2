@@ -79,15 +79,19 @@ def ingest_samples(
     dry_run: bool = False,
     resume: bool = True,
     task_timeout_s: float = 900.0,
+    brain_override: str | None = None,
 ) -> list[IngestRecord]:
     run_dir.mkdir(parents=True, exist_ok=True)
     ingest_path = run_dir / "ingest.jsonl"
     already_done = completed_unit_ids(ingest_path) if resume else set()
 
+    if brain_override and len(samples) > 1:
+        raise SystemExit("--brain can only be used with a single --sample")
+
     jobs: list[dict[str, Any]] = []
     for sample in samples:
         sample_id = str(sample["sample_id"])
-        brain_id = brain_id_for(sample_id)
+        brain_id = brain_override or brain_id_for(sample_id)
         for unit in iter_ingest_units(
             sample, granularity=granularity, limit_sessions=limit_sessions
         ):

@@ -65,6 +65,10 @@ Reports land in `runs/<run_id>/`:
 - `manifest.json` — run config
 - `report.md` / `report.json` — aggregated metrics
 
+## Results ledger
+
+[`REPORTS.json`](REPORTS.json) is the shared BrainAPI benchmark ledger (multi-suite). LoCoMo writes the `locomo` entry; successful `evaluate` / `report` upserts automatically. See [`AGENTS.md`](AGENTS.md).
+
 ## Commands
 
 | Command | Purpose |
@@ -74,9 +78,11 @@ Reports land in `runs/<run_id>/`:
 | `smoke` | One-shot ingest + retrieve health check |
 | `ingest` | Push sessions (or turns) into BrainAPI |
 | `answer-once` | Retrieve + answer a single question |
-| `selftest-metrics` | Local F1 / BLEU-1 sanity checks |
+| `selftest-metrics` | Local metric, channel-split and record-construction checks |
+| `prompt-audit` | Fail if the answer prompt shares an n-gram with any gold answer |
 | `evaluate` | Retrieve → answer → judge for QA items |
 | `report` | Aggregate `answers.jsonl` into markdown/JSON |
+| `compare` | Paired exact-McNemar comparison between two run arms |
 
 ### Useful flags
 
@@ -99,19 +105,84 @@ Reports land in `runs/<run_id>/`:
 - `--concurrency 2`
 - `--run <id>`
 
+**compare**
+
+- `--baseline <run>` / `--candidate <run>`, both repeatable — repeat to pool several runs of the same configuration into one arm
+- `--include-adversarial`
+- `--json`
+
 ## Scoring
 
 - **Headline number**: LLM-judge accuracy excluding category 5 (adversarial), matching common LoCoMo memory-system reporting.
 - Also reported: overall accuracy, per-category breakdown, mean F1, mean BLEU-1, retrieval latency p50/p95, total LLM tokens.
 - Categories: `1` multi-hop, `2` temporal, `3` open-domain, `4` single-hop, `5` adversarial.
+- Gold for adversarial questions is read from `adversarial_answer` when `answer` is absent. F1 and BLEU-1 are `null` (unscorable) when gold is empty rather than a perfect 1.0.
+- Evidence-session recall is reported for the **graph** and **passage** channels separately as well as combined, so the event graph's contribution is visible on its own.
 
-Defaults use **DeepSeek** (override in `.env`):
+### Comparing two runs
+
+Judge accuracy is noisy: 11–12% of questions flip between identical-config runs at
+`temperature=0`. **Passage** retrieval metrics are deterministic for a fixed brain
+and config. **Graph** session sets are a measurement only after identical-config
+agreement clears the **≥95%** gate (see `compare` graph-session stability output).
+Do not A/B graph EvR below that gate.
+
+```bash
+./locomo.sh compare --baseline locomo-conv26-push75-b --candidate locomo-conv26-push75-c
+./locomo.sh compare \
+  --baseline locomo-conv26-push75-a --baseline locomo-conv26-push75-b \
+  --candidate locomo-conv26-push75-c --candidate locomo-conv26-push75-d
+
+# Checkpoint A — identical-config graph stability (gate ≥95% session-set agreement)
+./locomo.sh evaluate --sample conv-26 --brain locomoconv26clean \
+  --run graph-stable-a --historical-limit 16 --max-passages 16 \
+  --max-facts 50 --use-ppr --no-sufficiency-retry
+./locomo.sh evaluate --sample conv-26 --brain locomoconv26clean \
+  --run graph-stable-b --historical-limit 16 --max-passages 16 \
+  --max-facts 50 --use-ppr --no-sufficiency-retry
+./locomo.sh compare --baseline graph-stable-a --candidate graph-stable-b
+```
+
+This reports the exact McNemar p-value with the flip table (how many questions moved
+to correct and how many to wrong), overall and per category. Two independent Wilson
+intervals are not a substitute: they discard the pairing and most of the power.
+When both arms are single runs, `compare` also prints graph-session set agreement
+vs the 95% gate.
+
+### Models
+
+Defaults use **DeepSeek** for the answerer (override in `.env`):
 
 - Base URL: `https://api.deepseek.com` (`BENCH_LLM_BASE_URL`)
-- Answerer + judge: `deepseek-v4-flash` (`BENCH_ANSWER_MODEL` / `BENCH_JUDGE_MODEL`)
+- Answerer: `deepseek-v4-flash` (`BENCH_ANSWER_MODEL`)
 - API key: `DEEPSEEK_API_KEY` (or `OPENAI_API_KEY` for other providers)
 
-Other OpenAI-compatible providers work the same way — set `BENCH_LLM_BASE_URL`, model ids, and the key.
+The judge is configured independently and should be a **different model family** from
+the answerer, otherwise judge accuracy carries self-preference bias. `evaluate` prints a
+warning and records `judge_shares_answer_family` in the manifest when the families match.
+
+- `BENCH_JUDGE_MODEL`, `BENCH_JUDGE_BASE_URL`, `BENCH_JUDGE_API_KEY` for any OpenAI-compatible provider
+- `BENCH_JUDGE_AZURE_ENDPOINT` / `BENCH_JUDGE_AZURE_KEY` / `BENCH_JUDGE_AZURE_API_VERSION` for Azure OpenAI; the repo-root `AZURE_LARGE_LLM_*` variables are picked up automatically when they are exported and no judge model is set explicitly
+- With no judge configuration at all, the judge falls back to the answerer's provider and model, and the run is marked as sharing a family
+
+Other OpenAI-compatible providers work the same way — set the base URL, model ids, and the key.
+
+## Reproducibility
+
+Every `ingest` and `evaluate` manifest records the git SHA and dirty flag, SHA-256 of the
+answer and judge prompts, SHA-256 of the dataset file, and the resolved answerer/judge
+model ids, families and providers. A prompt edit is a measurement-instrument change: it
+changes `answer_prompt_sha256`, and any comparison across that boundary is invalid.
+
+`prompt-audit` guards against tuning the answer prompt on gold answers:
+
+```bash
+./locomo.sh prompt-audit           # fails if any 3-gram of ANSWER_SYSTEM appears in a gold answer
+```
+
+`report` de-duplicates answers by `(sample_id, qa_index)`, counts errored rows, and marks
+a run that failed wholesale as `status: failed` with a banner, so a broken run can no
+longer render as a clean 0.0%.
 
 ## Cost and time expectations
 

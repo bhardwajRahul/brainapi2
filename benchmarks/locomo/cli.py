@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
@@ -18,10 +19,17 @@ from locomo.dataset import (
     load_dataset,
     resolve_samples,
 )
-from locomo.evaluate import evaluate_samples
-from locomo.ingest import ensure_run_dir, ingest_samples, write_manifest
-from locomo.metrics import selftest_metrics
-from locomo.report import print_report_table, write_report
+from locomo.evaluate import evaluate_samples, selftest_records
+from locomo.ingest import ensure_run_dir, ingest_samples, load_jsonl, write_manifest
+from locomo.metrics import (
+    compare_arms,
+    retrieval_arm_summary,
+    selftest_metrics,
+    tokenize,
+)
+from locomo.prompts import ANSWER_SYSTEM
+from locomo.provenance import build_provenance
+from locomo.report import print_comparison, print_report_table, write_report
 
 console = Console()
 
@@ -99,8 +107,8 @@ def cmd_ingest(args: argparse.Namespace, settings: Settings) -> int:
             "limit_sessions": args.limit_sessions,
             "dry_run": args.dry_run,
             "brainapi_url": settings.brainapi_url,
-            "answer_model": settings.answer_model,
-            "judge_model": settings.judge_model,
+            "brain_override": args.brain,
+            **build_provenance(settings),
         },
     )
     ingest_samples(
@@ -113,6 +121,7 @@ def cmd_ingest(args: argparse.Namespace, settings: Settings) -> int:
         dry_run=args.dry_run,
         resume=not args.no_resume,
         task_timeout_s=args.timeout,
+        brain_override=args.brain,
     )
     console.print(f"[green]Run directory:[/green] {run_dir}")
     return 0
@@ -141,7 +150,7 @@ def cmd_answer_once(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def cmd_selftest_metrics(args: argparse.Namespace, settings: Settings) -> int:
-    errors = selftest_metrics()
+    errors = selftest_metrics() + selftest_records()
     if errors:
         for err in errors:
             console.print(f"[red]FAIL[/red] {err}")
@@ -155,6 +164,14 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
     samples = resolve_samples(settings, sample_ids)
     run_id, run_dir = ensure_run_dir(settings, args.run)
     categories = _parse_categories(args.categories)
+    if settings.judge_shares_answer_family:
+        console.print(
+            f"[yellow]Warning: judge model ({settings.judge_model}) is the same "
+            f"family as the answer model ({settings.answer_model}); judge accuracy "
+            "carries self-preference bias. Set BENCH_JUDGE_MODEL (with "
+            "BENCH_JUDGE_BASE_URL / BENCH_JUDGE_API_KEY) to a different "
+            "family.[/yellow]"
+        )
     write_manifest(
         run_dir,
         {
@@ -166,9 +183,14 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
             "categories": sorted(categories) if categories else None,
             "limit": args.limit,
             "brainapi_url": settings.brainapi_url,
-            "answer_model": settings.answer_model,
-            "judge_model": settings.judge_model,
+            "brain_override": args.brain,
+            **build_provenance(settings),
             "historical_limit": args.historical_limit,
+            "max_passages": args.max_passages,
+            "max_facts": args.max_facts,
+            "apply_fact_filter": not args.no_fact_filter,
+            "use_ppr": args.use_ppr,
+            "sufficiency_retry": args.sufficiency_retry,
         },
     )
     evaluate_samples(
@@ -181,6 +203,12 @@ def cmd_evaluate(args: argparse.Namespace, settings: Settings) -> int:
         limit=args.limit,
         resume=not args.no_resume,
         historical_limit=args.historical_limit,
+        max_passages=args.max_passages,
+        max_facts=args.max_facts,
+        apply_fact_filter=not args.no_fact_filter,
+        use_ppr=args.use_ppr,
+        sufficiency_retry=args.sufficiency_retry,
+        brain_override=args.brain,
     )
     report = write_report(run_dir)
     print_report_table(report)
@@ -197,6 +225,79 @@ def cmd_report(args: argparse.Namespace, settings: Settings) -> int:
     console.print(report["run_dir"] + "/report.md")
     if args.json:
         console.print_json(json.dumps(report))
+    return 0
+
+
+def _load_run_answers(settings: Settings, run_id: str) -> list[dict[str, Any]]:
+    run_dir = settings.runs_dir / run_id
+    answers_path = run_dir / "answers.jsonl"
+    if not answers_path.exists():
+        raise SystemExit(f"No answers.jsonl in run: {run_dir}")
+    rows = load_jsonl(answers_path)
+    latest: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in rows:
+        if row.get("error"):
+            continue
+        latest[(str(row.get("sample_id")), int(row.get("qa_index") or 0))] = row
+    return list(latest.values())
+
+
+def cmd_compare(args: argparse.Namespace, settings: Settings) -> int:
+    baseline = [_load_run_answers(settings, run) for run in args.baseline]
+    candidate = [_load_run_answers(settings, run) for run in args.candidate]
+    comparison = compare_arms(
+        baseline, candidate, skip_adversarial=not args.include_adversarial
+    )
+    retrieval = {
+        "baseline": {"labels": args.baseline, **retrieval_arm_summary(baseline)},
+        "candidate": {"labels": args.candidate, **retrieval_arm_summary(candidate)},
+    }
+    print_comparison(
+        comparison,
+        " + ".join(args.baseline),
+        " + ".join(args.candidate),
+        retrieval,
+    )
+    if args.json:
+        console.print_json(
+            json.dumps({"comparison": comparison, "retrieval": retrieval})
+        )
+    return 0
+
+
+def cmd_prompt_audit(args: argparse.Namespace, settings: Settings) -> int:
+    dataset = load_dataset(settings.dataset_path)
+    prompt_tokens = tokenize(ANSWER_SYSTEM)
+    n = args.ngram
+    prompt_ngrams = {
+        tuple(prompt_tokens[i : i + n])
+        for i in range(0, max(0, len(prompt_tokens) - n + 1))
+    }
+    hits: list[tuple[str, int, str]] = []
+    for sample in dataset:
+        sample_id = str(sample.get("sample_id"))
+        for idx, qa in enumerate(sample.get("qa") or []):
+            gold = qa.get("answer")
+            if gold is None:
+                gold = qa.get("adversarial_answer")
+            gold_tokens = tokenize(str(gold or ""))
+            for i in range(0, max(0, len(gold_tokens) - n + 1)):
+                gram = tuple(gold_tokens[i : i + n])
+                if gram in prompt_ngrams:
+                    hits.append((sample_id, idx, " ".join(gram)))
+                    break
+    if hits:
+        console.print(
+            f"[red]FAIL[/red] answer prompt shares a {n}-gram with "
+            f"{len(hits)} gold answers"
+        )
+        for sample_id, idx, gram in hits[:20]:
+            console.print(f"  {sample_id}::{idx}  {gram!r}")
+        return 1
+    console.print(
+        f"[green]prompt-audit passed[/green] no {n}-gram of the answer prompt "
+        f"appears in any gold answer ({len(dataset)} conversations)"
+    )
     return 0
 
 
@@ -232,6 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ingest.add_argument("--run", default=None, help="Existing or new run id")
     p_ingest.add_argument(
+        "--brain",
+        default=None,
+        help="Override the derived brain id (single --sample only)",
+    )
+    p_ingest.add_argument(
         "--granularity", choices=("session", "turn"), default="session"
     )
     p_ingest.add_argument("--concurrency", type=int, default=2)
@@ -252,6 +358,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval = sub.add_parser("evaluate", help="Answer and score LoCoMo QA")
     p_eval.add_argument("--sample", action="append")
     p_eval.add_argument("--run", default=None)
+    p_eval.add_argument(
+        "--brain",
+        default=None,
+        help="Override the derived brain id (single --sample only)",
+    )
     p_eval.add_argument("--concurrency", type=int, default=2)
     p_eval.add_argument("--categories", default=None, help="e.g. 1,2,4")
     p_eval.add_argument("--limit", type=int, default=None)
@@ -262,12 +373,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_eval.add_argument("--no-resume", action="store_true")
     p_eval.add_argument("--historical-limit", type=int, default=10)
+    p_eval.add_argument("--max-passages", type=int, default=8)
+    p_eval.add_argument("--max-facts", type=int, default=40)
+    p_eval.add_argument("--no-fact-filter", action="store_true")
+    p_eval.add_argument("--use-ppr", action="store_true")
+    p_eval.add_argument("--sufficiency-retry", action="store_true")
     p_eval.set_defaults(func=cmd_evaluate)
 
     p_report = sub.add_parser("report", help="Rebuild report from a run directory")
     p_report.add_argument("--run", required=True)
     p_report.add_argument("--json", action="store_true")
     p_report.set_defaults(func=cmd_report)
+
+    p_compare = sub.add_parser(
+        "compare", help="Paired McNemar comparison between two run arms"
+    )
+    p_compare.add_argument("--baseline", action="append", required=True)
+    p_compare.add_argument("--candidate", action="append", required=True)
+    p_compare.add_argument("--include-adversarial", action="store_true")
+    p_compare.add_argument("--json", action="store_true")
+    p_compare.set_defaults(func=cmd_compare)
+
+    p_audit = sub.add_parser(
+        "prompt-audit",
+        help="Fail if the answer prompt shares an n-gram with any gold answer",
+    )
+    p_audit.add_argument("--ngram", type=int, default=3)
+    p_audit.set_defaults(func=cmd_prompt_audit)
 
     return parser
 
