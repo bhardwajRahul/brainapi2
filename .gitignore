@@ -18,7 +18,7 @@ mcp-stdio-http-bridge/target/
 mcp-stdio-http-bridge/dist/
 
 plugins/**
-docs/**
+
 
 .git
 
@@ -26,3 +26,5 @@ tui/node_modules
 tui/dist
 .cursor
 tui/embedded
+
+.agent_tmp
