@@ -1271,6 +1271,244 @@ class NetworkXGraphClient(GraphClient):
         return triples
 
 
+    def get_event_hub_facts(
+        self,
+        event_uuids: list[str],
+        brain_id: str,
+    ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
+        unique = sorted({str(u) for u in event_uuids if u})
+        if not unique:
+            return []
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        event_set = set(unique)
+        neighbor_seeds: list[str] = []
+        seen_seeds: set[str] = set()
+        for event_uuid in unique:
+            for neighbor, _key, _data, _direction in self._incident_edges(
+                brain, event_uuid
+            ):
+                if neighbor in seen_seeds or neighbor in event_set:
+                    continue
+                seen_seeds.add(neighbor)
+                neighbor_seeds.append(neighbor)
+        neighbor_seeds.sort()
+        results = []
+        seen_keys: set[tuple[str, str]] = set()
+        for (
+            n_uuid,
+            m_uuid,
+            b_uuid,
+            r1_data,
+            r2_data,
+            r_direction,
+            r2_direction,
+        ) in self._event_path_records(brain, neighbor_seeds):
+            if m_uuid not in event_set:
+                continue
+            key = (
+                str(r1_data.get("uuid") or ""),
+                str(r2_data.get("uuid") or ""),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            results.append(
+                (
+                    self._node_from_brain(brain, n_uuid),
+                    self._predicate_from_edge(r1_data, r_direction),
+                    self._node_from_brain(brain, m_uuid),
+                    self._predicate_from_edge(r2_data, r2_direction),
+                    self._node_from_brain(brain, b_uuid),
+                )
+            )
+        results.sort(
+            key=lambda row: (
+                str(getattr(row[2], "uuid", "") or ""),
+                str(getattr(row[1], "uuid", "") or ""),
+                str(getattr(row[3], "uuid", "") or ""),
+            )
+        )
+        return results
+
+    def rebuild_hub_bridge_index(self, brain_id: str) -> int:
+        from src.core.saving.hub_bridges import (
+            bridges_from_memberships,
+            entity_event_memberships,
+            is_event_labels,
+        )
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        rows: list[tuple[str, str, str, str]] = []
+        for source, target, _key, edge_data in brain.graph.edges(keys=True, data=True):
+            rel_name = str(edge_data.get("rel_type") or edge_data.get("name") or "")
+            source_labels = brain.labels(source)
+            target_labels = brain.labels(target)
+            source_is_event = is_event_labels(source_labels)
+            target_is_event = is_event_labels(target_labels)
+            if source_is_event and not target_is_event:
+                rows.append(
+                    (
+                        source,
+                        target,
+                        str(brain.node_data(target).get("name") or ""),
+                        rel_name,
+                    )
+                )
+            elif target_is_event and not source_is_event:
+                rows.append(
+                    (
+                        target,
+                        source,
+                        str(brain.node_data(source).get("name") or ""),
+                        rel_name,
+                    )
+                )
+        bridges = bridges_from_memberships(entity_event_memberships(rows))
+        payload = [
+            (
+                br.event_a,
+                br.event_b,
+                br.shared_entity,
+                br.shared_entity_name,
+                br.weight,
+            )
+            for br in bridges
+        ]
+        return self._store.replace_hub_bridges(brain_id, payload)
+
+    def get_hub_bridges(
+        self,
+        event_uuids: list[str],
+        brain_id: str,
+    ) -> list[dict]:
+        from src.core.saving.hub_bridges import HubBridge
+
+        rows = self._store.get_hub_bridges_for_events(brain_id, event_uuids)
+        return [
+            HubBridge(
+                event_a=a,
+                event_b=b,
+                shared_entity=entity,
+                shared_entity_name=name,
+                weight=weight,
+            )
+            for a, b, entity, name, weight in rows
+        ]
+
+    def rebuild_topic_index(self, brain_id: str) -> int:
+        import re
+
+        from src.core.saving.hub_bridges import (
+            is_context_rel,
+            is_event_labels,
+            is_spine_rel,
+        )
+        from src.core.saving.topic_hyperedges import (
+            cluster_sessions_into_topics,
+            session_entity_sets,
+        )
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        session_re = re.compile(r"session_(\d+)", re.IGNORECASE)
+
+        def sessions_from_text(text: str) -> list[str]:
+            found: list[str] = []
+            seen: set[str] = set()
+            for match in session_re.finditer(text or ""):
+                sid = f"session_{match.group(1)}"
+                if sid not in seen:
+                    seen.add(sid)
+                    found.append(sid)
+            return found
+
+        chunk_ids: list[str] = []
+        event_chunks: dict[str, list[str]] = {}
+        for node_uuid in brain.graph.nodes:
+            if not is_event_labels(brain.labels(node_uuid)):
+                continue
+            props = brain.node_data(node_uuid)
+            ids = [
+                str(x)
+                for x in (props.get("source_chunk_ids") or [])
+                if x
+            ]
+            single = props.get("source_chunk_id")
+            if single:
+                ids.append(str(single))
+            ids = sorted(set(ids))
+            event_chunks[node_uuid] = ids
+            chunk_ids.extend(ids)
+
+        chunk_sessions: dict[str, list[str]] = {}
+        if chunk_ids:
+            try:
+                from src.services.data.main import data_adapter
+
+                chunks, _ = data_adapter.get_text_chunks_by_ids(
+                    sorted(set(chunk_ids))[:500],
+                    False,
+                    brain_id,
+                )
+                for chunk in chunks:
+                    cid = str(getattr(chunk, "id", "") or "")
+                    body = getattr(chunk, "text", "") or ""
+                    if cid:
+                        chunk_sessions[cid] = sessions_from_text(body)
+            except Exception:
+                chunk_sessions = {}
+
+        rows: list[tuple[str, str, str]] = []
+        for source, target, _key, edge_data in brain.graph.edges(keys=True, data=True):
+            rel_name = str(edge_data.get("rel_type") or edge_data.get("name") or "")
+            if is_context_rel(rel_name) or not is_spine_rel(rel_name):
+                continue
+            source_is_event = is_event_labels(brain.labels(source))
+            target_is_event = is_event_labels(brain.labels(target))
+            if source_is_event and not target_is_event:
+                event_uuid, entity_uuid = source, target
+            elif target_is_event and not source_is_event:
+                event_uuid, entity_uuid = target, source
+            else:
+                continue
+            entity_name = str(brain.node_data(entity_uuid).get("name") or "")
+            sessions: list[str] = []
+            for cid in event_chunks.get(event_uuid, []):
+                sessions.extend(chunk_sessions.get(cid, []))
+            if not sessions:
+                props = brain.node_data(event_uuid)
+                sessions = sessions_from_text(
+                    " ".join(
+                        str(props.get(k) or "")
+                        for k in ("name", "description", "summary")
+                    )
+                )
+            for sid in sessions:
+                rows.append((sid, entity_uuid, entity_name))
+
+        memberships = cluster_sessions_into_topics(session_entity_sets(rows))
+        payload = [
+            (m.topic_id, m.topic_label, m.session_id, m.weight) for m in memberships
+        ]
+        return self._store.replace_topic_sessions(brain_id, payload)
+
+    def list_topic_memberships(self, brain_id: str) -> list:
+        from src.core.saving.topic_hyperedges import TopicSession
+
+        rows = self._store.list_topic_sessions(brain_id)
+        return [
+            TopicSession(
+                topic_id=tid,
+                topic_label=label,
+                session_id=sid,
+                weight=weight,
+            )
+            for tid, label, sid, weight in rows
+        ]
+
+
 def _records(data: list | Any) -> Any:
     if hasattr(data, "records"):
         return data

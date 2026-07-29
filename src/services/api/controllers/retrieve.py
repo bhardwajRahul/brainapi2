@@ -10,7 +10,9 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import asyncio
 import json
-import threading
+import re
+from collections import defaultdict
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -19,9 +21,13 @@ from starlette.responses import JSONResponse
 from src.constants.embeddings import Vector
 from src.constants.kg import IdentificationParams, Node, Predicate
 from src.core.search.entities import search_entities
-from src.core.search.entity_info import EventSynergyRetriever, MatchPath
-from src.core.search.fact_filter import filter_relevant_facts, reciprocal_rank_fusion
+from src.core.search.fact_filter import (
+    filter_relevant_facts,
+    personalized_pagerank,
+    reciprocal_rank_fusion,
+)
 from src.core.search.relationships import search_relationships
+from src.lib.tracing.profiler import profile_request, profile_stage
 from src.utils.vector_search import VectorSearchFacade
 from src.services.api.constants.requests import (
     GetContextRequestBody,
@@ -34,16 +40,340 @@ from src.services.api.constants.requests import (
 from src.services.kg_agent.main import graph_adapter, kg_agent
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
+from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
 _MAX_NOUN_CHUNKS = 5
-_MAX_DOSSIER_ENTITIES = 5
-_DOSSIER_MAX_DEPTH = 3
-_SEED_K = 20
-_PASSAGE_K = 12
+_SEED_K = 25
+_PASSAGE_K = 24
+_PPR_DAMPING = 0.85
+_PPR_ITERS = 20
+_SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
+_SPINE_ACTOR = ("MADE", "INITIATED", "PERFORMED", "EXPERIENCED", "COVERED")
+_SPINE_TARGET = ("TARGETED", "AFFECTED", "RESULTED")
+_CONTEXT_REL = ("OCCURRED", "WITHIN")
+_DIVERSIFY_LAMBDA = 0.65
+_BRIDGE_SCORE_PENALTY = 0.15
+_BRIDGE_SEED_HUB_CAP = 12
+_BRIDGE_RESERVE_HUB_CAP = 6
+_BRIDGE_RESERVE_MIN = 3
+_BRIDGE_RESERVE_FRAC_DENOM = 4
+_DISTANCE_QUANT_DECIMALS = 3
+
+
+def _quantize_distance(distance: float) -> float:
+    try:
+        value = float(distance)
+    except (TypeError, ValueError):
+        return float("inf")
+    if value != value or value == float("inf") or value == float("-inf"):
+        return value
+    return round(value, _DISTANCE_QUANT_DECIMALS)
+
+
+def _candidate_event_uuid(candidate: dict[str, Any]) -> str:
+    return _event_hub_id(candidate)
+
+
+def _best_hub_fact_texts(candidates: list[dict[str, Any]]) -> dict[str, str]:
+    best: dict[str, tuple[float, str]] = {}
+    for candidate in candidates:
+        hub = _candidate_event_uuid(candidate)
+        if not hub:
+            continue
+        text = str(candidate.get("text") or "").strip()
+        if not text:
+            continue
+        score = _candidate_distance(candidate)
+        prev = best.get(hub)
+        if prev is None or score < prev[0] or (score == prev[0] and text < prev[1]):
+            best[hub] = (score, text)
+    return {hub: text for hub, (_score, text) in best.items()}
+
+
+def _paths_for_curated(
+    paths: list[dict[str, Any]],
+    curated: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep bridge paths whose hubs both survived curation; attach fact legs."""
+    hub_texts = _best_hub_fact_texts(curated)
+    if not hub_texts or not paths:
+        return []
+    curated_hubs = set(hub_texts)
+    out: list[dict[str, Any]] = []
+    for path in paths:
+        hubs = [str(h) for h in (path.get("hubs") or []) if h]
+        if len(hubs) < 2 or not all(hub in curated_hubs for hub in hubs):
+            continue
+        out.append(
+            {
+                "hubs": hubs,
+                "shared_entity": path.get("shared_entity"),
+                "shared_entity_name": path.get("shared_entity_name"),
+                "weight": path.get("weight"),
+                "legs": [hub_texts[hub] for hub in hubs],
+            }
+        )
+    out.sort(
+        key=lambda p: (
+            tuple(p["hubs"]),
+            str(p.get("shared_entity") or ""),
+        )
+    )
+    return out
+
+
+def _candidate_distance(candidate: dict[str, Any]) -> float:
+    raw = candidate.get("score")
+    if raw is None:
+        return float("inf")
+    try:
+        return _quantize_distance(float(raw))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def _rank_bridge_seed_hubs(
+    candidates: list[dict[str, Any]],
+    *,
+    cap: int,
+) -> list[str]:
+    hub_best_score: dict[str, float] = {}
+    for candidate in candidates:
+        hub = _candidate_event_uuid(candidate)
+        if not hub:
+            continue
+        score = _candidate_distance(candidate)
+        prev = hub_best_score.get(hub)
+        if prev is None or score < prev:
+            hub_best_score[hub] = score
+    return sorted(
+        hub_best_score.keys(),
+        key=lambda hub: (hub_best_score[hub], hub),
+    )[: max(0, cap)]
+
+
+def _resolve_chunk_sessions(
+    chunk_ids: list[str], brain_id: str
+) -> dict[str, list[str]]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for chunk_id in chunk_ids:
+        cid = str(chunk_id or "").strip()
+        if cid and cid not in seen:
+            seen.add(cid)
+            unique.append(cid)
+    if not unique:
+        return {}
+    out: dict[str, list[str]] = {}
+    try:
+        chunks, _ = data_adapter.get_text_chunks_by_ids(
+            unique[:120], False, brain_id
+        )
+    except Exception:
+        return {}
+    for chunk in chunks:
+        chunk_id = str(getattr(chunk, "id", "") or "")
+        body = (getattr(chunk, "text", None) or "").strip()
+        if not chunk_id or not body:
+            continue
+        sessions = _session_ids_from_text(body)
+        if sessions:
+            out[chunk_id] = sessions
+    return out
+
+
+def _sessions_from_chunk_map(
+    chunk_ids: list[str], chunk_sessions: dict[str, list[str]]
+) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for chunk_id in chunk_ids:
+        for sid in chunk_sessions.get(str(chunk_id), []) or []:
+            if sid not in seen:
+                seen.add(sid)
+                found.append(sid)
+    return found
+
+
+def _expand_cross_event_bridges(
+    candidates: list[dict[str, Any]],
+    brain_id: str,
+    *,
+    max_per_hub: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from src.core.saving.hub_bridges import (
+        HubBridge,
+        select_bridge_neighbors,
+    )
+
+    if max_per_hub <= 0 or not candidates:
+        return candidates, []
+
+    hub_best_score: dict[str, float] = {}
+    seed_sessions: set[str] = set()
+    seed_chunk_ids: list[str] = []
+    for candidate in candidates:
+        hub = _candidate_event_uuid(candidate)
+        if hub:
+            score = _candidate_distance(candidate)
+            prev = hub_best_score.get(hub)
+            if prev is None or score < prev:
+                hub_best_score[hub] = score
+        for sid in _candidate_session_ids(candidate):
+            seed_sessions.add(sid)
+        seed_chunk_ids.extend(str(c) for c in (candidate.get("chunk_ids") or []) if c)
+
+    ranked_seeds = _rank_bridge_seed_hubs(
+        candidates, cap=_BRIDGE_SEED_HUB_CAP
+    )
+    if not ranked_seeds:
+        return candidates, []
+    reserve_hubs = set(
+        ranked_seeds[: min(_BRIDGE_RESERVE_HUB_CAP, len(ranked_seeds))]
+    )
+
+    try:
+        bridges = graph_adapter.get_hub_bridges(ranked_seeds, brain_id=brain_id)
+    except Exception:
+        return candidates, []
+    if not bridges:
+        return candidates, []
+
+    typed_bridges: list[HubBridge] = []
+    for item in bridges:
+        if isinstance(item, HubBridge):
+            typed_bridges.append(item)
+        else:
+            typed_bridges.append(
+                HubBridge(
+                    event_a=str(item.get("event_a") or ""),
+                    event_b=str(item.get("event_b") or ""),
+                    shared_entity=str(item.get("shared_entity") or ""),
+                    shared_entity_name=str(item.get("shared_entity_name") or ""),
+                    weight=float(item.get("weight") or 1.0),
+                )
+            )
+
+    expansions = select_bridge_neighbors(
+        ranked_seeds,
+        typed_bridges,
+        max_per_hub=max_per_hub,
+    )
+    if not expansions:
+        return candidates, []
+
+    selected_neighbors = {neighbor for neighbor, _ in expansions}
+    neighbor_uuids = sorted(selected_neighbors)
+    with profile_stage(
+        "graph.bridge_neighbors", neighbors=len(neighbor_uuids)
+    ) as detail:
+        neighbors = graph_adapter.get_event_hub_facts(
+            neighbor_uuids, brain_id=brain_id
+        )
+        detail["rows"] = len(neighbors)
+
+    neighbor_chunk_ids: list[str] = []
+    facts_by_hub: dict[str, list[tuple[Any, Any, Any, Any, Any]]] = {}
+    for n, r, m, r2, b in neighbors:
+        event_uuid = str(getattr(m, "uuid", "") or "")
+        if not event_uuid:
+            continue
+        facts_by_hub.setdefault(event_uuid, []).append((n, r, m, r2, b))
+        neighbor_chunk_ids.extend(_extract_source_chunk_ids(n, r, m, r2, b))
+
+    chunk_sessions = _resolve_chunk_sessions(
+        seed_chunk_ids + neighbor_chunk_ids, brain_id
+    )
+    if not seed_sessions:
+        seed_sessions.update(_sessions_from_chunk_map(seed_chunk_ids, chunk_sessions))
+
+    hub_sessions: dict[str, set[str]] = {}
+    for event_uuid, rows in facts_by_hub.items():
+        sessions: set[str] = set()
+        for n, r, m, r2, b in rows:
+            chunk_ids = _extract_source_chunk_ids(n, r, m, r2, b)
+            sessions.update(_sessions_from_chunk_map(chunk_ids, chunk_sessions))
+        hub_sessions[event_uuid] = sessions
+
+    bridge_by_neighbor = {neighbor: bridge for neighbor, bridge in expansions}
+    seed_by_neighbor: dict[str, str] = {}
+    for neighbor, bridge in expansions:
+        if bridge.event_a == neighbor:
+            seed_by_neighbor[neighbor] = bridge.event_b
+        else:
+            seed_by_neighbor[neighbor] = bridge.event_a
+
+    path_meta: list[dict[str, Any]] = []
+    for neighbor, bridge in expansions:
+        seed = seed_by_neighbor.get(neighbor, "")
+        path_meta.append(
+            {
+                "hubs": sorted([seed, neighbor]),
+                "shared_entity": bridge.shared_entity,
+                "shared_entity_name": bridge.shared_entity_name,
+                "weight": bridge.weight,
+            }
+        )
+    path_meta.sort(
+        key=lambda p: (
+            tuple(p["hubs"]),
+            p["shared_entity"],
+        )
+    )
+
+    existing_keys = {
+        candidate.get("key")
+        for candidate in candidates
+        if candidate.get("key") is not None
+    }
+    expanded = list(candidates)
+    for event_uuid in sorted(selected_neighbors):
+        bridge = bridge_by_neighbor.get(event_uuid)
+        if bridge is None:
+            continue
+        seed = seed_by_neighbor.get(event_uuid, "")
+        base = hub_best_score.get(seed, float("inf"))
+        novel = hub_sessions.get(event_uuid, set()) - seed_sessions
+        score = (
+            base + _BRIDGE_SCORE_PENALTY
+            if base != float("inf")
+            else float("inf")
+        )
+        if novel and score != float("inf"):
+            score = max(0.0, score - min(0.05, 0.02 * len(novel)))
+        reserve_ok = seed in reserve_hubs
+        for n, r, m, r2, b in facts_by_hub.get(event_uuid, []):
+            if not _is_currently_valid(r) or not _is_currently_valid(r2):
+                continue
+            key = _fact_key(r, r2)
+            if key in existing_keys:
+                continue
+            existing_keys.add(key)
+            chunk_ids = _extract_source_chunk_ids(n, r, m, r2, b)
+            session_ids = _sessions_from_chunk_map(chunk_ids, chunk_sessions)
+            expanded.append(
+                {
+                    "identified_entity": f"bridge:{bridge.shared_entity}",
+                    "triple": (n, r, m, r2, b),
+                    "score": score,
+                    "key": key,
+                    "text": _format_event_fact(n, r, m, r2, b),
+                    "chunk_ids": chunk_ids,
+                    "session_ids": session_ids,
+                    "bridge": {
+                        "from_hub": seed,
+                        "to_hub": event_uuid,
+                        "shared_entity": bridge.shared_entity,
+                        "shared_entity_name": bridge.shared_entity_name,
+                        "reserve_ok": reserve_ok,
+                    },
+                }
+            )
+    return expanded, path_meta
 
 
 async def retrieve_data(
@@ -401,11 +731,508 @@ def _format_kg_item(item: Any) -> str:
 
 
 def _format_event_fact(n: Node, r: Predicate, m: Node, r2: Predicate, b: Node) -> str:
-    return " | ".join(_format_kg_item(item) for item in (n, r, m, r2, b))
+    r2_name = (getattr(r2, "name", None) or "").upper()
+    end_label = (
+        "Context"
+        if any(token in r2_name for token in _CONTEXT_REL)
+        else "Target"
+    )
+    return (
+        f"Actor: {_format_kg_item(n)} | {_format_kg_item(r)} | "
+        f"Event: {_format_kg_item(m)} | {_format_kg_item(r2)} | "
+        f"{end_label}: {_format_kg_item(b)}"
+    )
 
 
 def _fact_key(r: Predicate, r2: Predicate) -> tuple[str, str]:
     return (getattr(r, "uuid", None) or "", getattr(r2, "uuid", None) or "")
+
+
+def _rel_name(predicate: Predicate | None) -> str:
+    return (getattr(predicate, "name", None) or "").upper()
+
+
+def _is_spine_actor_rel(name: str) -> bool:
+    return any(token in name for token in _SPINE_ACTOR)
+
+
+def _is_spine_target_rel(name: str) -> bool:
+    return any(token in name for token in _SPINE_TARGET)
+
+
+def _is_context_rel(name: str) -> bool:
+    return any(token in name for token in _CONTEXT_REL)
+
+
+def _event_hub_id(candidate: dict[str, Any]) -> str:
+    triple = candidate.get("triple") or ()
+    r = triple[1] if len(triple) > 1 else None
+    m = triple[2] if len(triple) > 2 else None
+    r2 = triple[3] if len(triple) > 3 else None
+    event_uuid = getattr(m, "uuid", None) if m is not None else None
+    if event_uuid:
+        return str(event_uuid)
+    flow_key = (
+        getattr(r, "flow_key", None)
+        or getattr(r2, "flow_key", None)
+        or ""
+    )
+    if flow_key:
+        return str(flow_key)
+    key = candidate.get("key")
+    if isinstance(key, tuple):
+        return "|".join(str(part or "") for part in key)
+    return str(candidate.get("text") or "")
+
+
+def _candidate_session_ids(candidate: dict[str, Any]) -> list[str]:
+    sessions = candidate.get("session_ids")
+    if isinstance(sessions, list) and sessions:
+        return [str(s) for s in sessions if s]
+    return []
+
+
+def _hub_leg_kind(candidate: dict[str, Any]) -> str:
+    triple = candidate.get("triple") or ()
+    r2 = triple[3] if len(triple) > 3 else None
+    name = _rel_name(r2)
+    if _is_context_rel(name):
+        return "context"
+    if _is_spine_target_rel(name):
+        return "spine"
+    return "other"
+
+
+def _hub_completeness_score(candidate: dict[str, Any]) -> float:
+    triple = candidate.get("triple") or ()
+    if len(triple) < 5:
+        return 0.0
+    n, r, m, r2, b = triple
+    score = 0.0
+    m_labels = {str(label).upper() for label in (getattr(m, "labels", None) or [])}
+    if "EVENT" in m_labels:
+        score += 1.0
+    r_name = _rel_name(r)
+    r2_name = _rel_name(r2)
+    if _is_spine_actor_rel(r_name):
+        score += 1.0
+    elif r_name:
+        score += 0.2
+    if _is_spine_target_rel(r2_name):
+        score += 1.0
+    elif _is_context_rel(r2_name):
+        score += 0.35
+    elif r2_name:
+        score += 0.15
+    if getattr(n, "uuid", None) and getattr(b, "uuid", None):
+        score += 0.5
+    if getattr(m, "happened_at", None):
+        score += 0.15
+    return score
+
+
+def _fact_recency_score(candidate: dict[str, Any]) -> float:
+    triple = candidate.get("triple") or ()
+    best = 0.0
+    now = datetime.now(tz=None)
+    for node in triple[0::2] if triple else ():
+        raw = getattr(node, "happened_at", None)
+        if not raw:
+            continue
+        parsed = parse_date_string(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, datetime):
+            continue
+        days_ago = max(0, (now - to_naive_utc(parsed)).days)
+        score = 1.0 if days_ago <= 0 else 1.0 / (1.0 + days_ago)
+        if score > best:
+            best = score
+    return best
+
+
+def _relevance_score(candidate: dict[str, Any]) -> float:
+    distance = _candidate_distance(candidate)
+    distance_term = 1.0 / (1.0 + max(0.0, distance))
+    ppr_term = float(candidate.get("ppr_mass") or 0.0)
+    completeness = _hub_completeness_score(candidate) / 3.8
+    recency = _fact_recency_score(candidate)
+    topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
+    return (
+        0.45 * distance_term
+        + 0.25 * ppr_term
+        + 0.20 * completeness
+        + 0.10 * recency
+        + topic_boost
+    )
+
+
+def _completeness_rank_key(candidate: dict[str, Any]) -> tuple:
+    return (
+        -_relevance_score(candidate),
+        _candidate_distance(candidate),
+    ) + _candidate_tiebreak_key(candidate)
+
+
+def _rank_facts_with_completeness(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(candidates, key=_completeness_rank_key)
+
+
+def _is_complementary_hub_leg(
+    selected_meta: list[dict[str, Any]], item: dict[str, Any]
+) -> bool:
+    if item["kind"] not in {"spine", "context"}:
+        return False
+    for prev in selected_meta:
+        if prev["hub"] != item["hub"]:
+            continue
+        if {item["kind"], prev["kind"]} == {"spine", "context"}:
+            return True
+    return False
+
+
+def _bridge_reserved_slots(max_facts: int) -> int:
+    if max_facts <= 0:
+        return 0
+    return min(
+        max_facts,
+        max(_BRIDGE_RESERVE_MIN, max_facts // _BRIDGE_RESERVE_FRAC_DENOM),
+    )
+
+
+def _is_bridge_candidate(candidate: dict[str, Any]) -> bool:
+    return bool(candidate.get("bridge"))
+
+
+def _bridge_reserve_ok(candidate: dict[str, Any]) -> bool:
+    bridge = candidate.get("bridge")
+    if not bridge:
+        return False
+    if isinstance(bridge, dict) and "reserve_ok" in bridge:
+        return bool(bridge.get("reserve_ok"))
+    return True
+
+
+def _prepare_diversify_item(candidate: dict[str, Any]) -> dict[str, Any]:
+    key = candidate.get("key") or ("", "")
+    is_bridge = _is_bridge_candidate(candidate)
+    return {
+        "candidate": candidate,
+        "relevance": _relevance_score(candidate),
+        "hub": _event_hub_id(candidate),
+        "sessions": frozenset(_candidate_session_ids(candidate)),
+        "kind": _hub_leg_kind(candidate),
+        "tie": (str(key[0]) if key else "", str(key[1]) if len(key) > 1 else ""),
+        "is_bridge": is_bridge,
+        "reserve_ok": _bridge_reserve_ok(candidate) if is_bridge else False,
+    }
+
+
+def _mmr_pick_index(
+    remaining: list[dict[str, Any]],
+    selected_meta: list[dict[str, Any]],
+    selected_hubs: set[str],
+    selected_sessions: set[str],
+) -> int:
+    best_idx = 0
+    best_mmr = None
+    best_tie = None
+    for idx, item in enumerate(remaining):
+        relevance = item["relevance"]
+        hub = item["hub"]
+        sessions = item["sessions"]
+        complementary = _is_complementary_hub_leg(selected_meta, item)
+        if complementary:
+            hub_pen = 0.0
+            sess_pen = 0.0
+            relevance = relevance + 0.5
+        else:
+            hub_pen = 1.0 if hub in selected_hubs else 0.0
+            if sessions and selected_sessions:
+                sess_pen = len(sessions & selected_sessions) / max(
+                    1, len(sessions)
+                )
+            else:
+                sess_pen = 0.0
+        redundancy = 0.55 * hub_pen + 0.45 * sess_pen
+        mmr = _DIVERSIFY_LAMBDA * relevance - (1.0 - _DIVERSIFY_LAMBDA) * redundancy
+        tie = item["tie"]
+        if (
+            best_mmr is None
+            or mmr > best_mmr
+            or (mmr == best_mmr and (best_tie is None or tie < best_tie))
+        ):
+            best_mmr = mmr
+            best_tie = tie
+            best_idx = idx
+    return best_idx
+
+
+def _mmr_take(
+    remaining: list[dict[str, Any]],
+    *,
+    budget: int,
+    selected: list[dict[str, Any]],
+    selected_meta: list[dict[str, Any]],
+    selected_hubs: set[str],
+    selected_sessions: set[str],
+) -> None:
+    while budget > 0 and remaining:
+        best_idx = _mmr_pick_index(
+            remaining, selected_meta, selected_hubs, selected_sessions
+        )
+        chosen = remaining.pop(best_idx)
+        selected.append(chosen["candidate"])
+        selected_meta.append(chosen)
+        selected_hubs.add(chosen["hub"])
+        selected_sessions.update(chosen["sessions"])
+        budget -= 1
+
+
+def _take_novel_bridge_slots(
+    remaining: list[dict[str, Any]],
+    *,
+    budget: int,
+    covered_sessions: set[str],
+    selected: list[dict[str, Any]],
+    selected_meta: list[dict[str, Any]],
+    selected_hubs: set[str],
+    selected_sessions: set[str],
+) -> None:
+    while budget > 0 and remaining:
+        novel_sessions: set[str] = set()
+        for item in remaining:
+            if not item["is_bridge"] or not item["reserve_ok"]:
+                continue
+            novel_sessions.update(item["sessions"] - covered_sessions)
+        if not novel_sessions:
+            break
+        target = min(novel_sessions)
+        best_idx = None
+        best_key = None
+        for idx, item in enumerate(remaining):
+            if not item["is_bridge"] or not item["reserve_ok"]:
+                continue
+            if target not in item["sessions"]:
+                continue
+            key = (item["hub"], item["tie"])
+            if best_key is None or key < best_key:
+                best_key = key
+                best_idx = idx
+        if best_idx is None:
+            break
+        chosen = remaining.pop(best_idx)
+        selected.append(chosen["candidate"])
+        selected_meta.append(chosen)
+        selected_hubs.add(chosen["hub"])
+        selected_sessions.update(chosen["sessions"])
+        covered_sessions.update(chosen["sessions"])
+        budget -= 1
+
+
+def _diversify_facts(
+    ranked: list[dict[str, Any]],
+    *,
+    max_facts: int,
+) -> list[dict[str, Any]]:
+    if max_facts <= 0 or not ranked:
+        return []
+    if len(ranked) <= max_facts:
+        return list(ranked)
+
+    prepared = [_prepare_diversify_item(candidate) for candidate in ranked]
+    prepared.sort(key=lambda item: (-item["relevance"], item["tie"]))
+
+    selected: list[dict[str, Any]] = []
+    selected_meta: list[dict[str, Any]] = []
+    selected_hubs: set[str] = set()
+    selected_sessions: set[str] = set()
+
+    reserve = _bridge_reserved_slots(max_facts)
+    has_bridge = any(item["is_bridge"] and item["reserve_ok"] for item in prepared)
+    if not has_bridge:
+        reserve = 0
+    main_budget = max_facts - reserve
+
+    non_bridge = [item for item in prepared if not item["is_bridge"]]
+    bridge_items = [item for item in prepared if item["is_bridge"]]
+    stable_bridges = [item for item in bridge_items if item["reserve_ok"]]
+
+    _mmr_take(
+        non_bridge,
+        budget=main_budget,
+        selected=selected,
+        selected_meta=selected_meta,
+        selected_hubs=selected_hubs,
+        selected_sessions=selected_sessions,
+    )
+
+    covered_by_non_bridge = set(selected_sessions)
+    _take_novel_bridge_slots(
+        stable_bridges,
+        budget=reserve,
+        covered_sessions=covered_by_non_bridge,
+        selected=selected,
+        selected_meta=selected_meta,
+        selected_hubs=selected_hubs,
+        selected_sessions=selected_sessions,
+    )
+
+    remaining = non_bridge + stable_bridges
+    remaining.sort(key=lambda item: (-item["relevance"], item["tie"]))
+    leftover = max_facts - len(selected)
+    _mmr_take(
+        remaining,
+        budget=leftover,
+        selected=selected,
+        selected_meta=selected_meta,
+        selected_hubs=selected_hubs,
+        selected_sessions=selected_sessions,
+    )
+    return selected
+
+
+def _temporal_conflict_meta(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_entity: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for candidate in candidates:
+        triple = candidate.get("triple") or ()
+        for node in (triple[0], triple[4]) if len(triple) >= 5 else ():
+            uuid = getattr(node, "uuid", None)
+            if not uuid:
+                continue
+            happened = None
+            event = triple[2] if len(triple) > 2 else None
+            raw = getattr(event, "happened_at", None) if event is not None else None
+            if isinstance(raw, str) and raw.strip():
+                happened = raw.strip()
+            by_entity[str(uuid)].append(
+                {
+                    "fact_key": list(candidate.get("key") or ()),
+                    "hub_id": _event_hub_id(candidate),
+                    "happened_at": happened,
+                }
+            )
+    conflicts: list[dict[str, Any]] = []
+    for entity_uuid, entries in sorted(by_entity.items()):
+        times = {
+            entry["happened_at"]
+            for entry in entries
+            if entry.get("happened_at")
+        }
+        hubs = {entry["hub_id"] for entry in entries}
+        if len(times) >= 2 and len(hubs) >= 2:
+            conflicts.append(
+                {
+                    "entity_uuid": entity_uuid,
+                    "hubs": sorted(hubs),
+                    "happened_ats": sorted(times),
+                    "facts": [entry["fact_key"] for entry in entries],
+                }
+            )
+    return conflicts
+
+
+def _edge_type_weight(predicate: Predicate | None, query: str | None = None) -> float:
+    name = _rel_name(predicate)
+    if _is_spine_actor_rel(name) or _is_spine_target_rel(name):
+        weight = 1.0
+    elif _is_context_rel(name):
+        weight = 0.35
+    else:
+        weight = 0.55
+    if query:
+        q_tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+        p_tokens = set(re.findall(r"[a-z0-9]+", name.lower()))
+        if q_tokens and p_tokens:
+            overlap = len(q_tokens & p_tokens) / max(1, len(p_tokens))
+            weight *= 1.0 + 0.5 * overlap
+    return weight
+
+
+def _add_weighted_edge(
+    adjacency: dict[str, dict[str, float]],
+    src: str | None,
+    dst: str | None,
+    weight: float,
+) -> None:
+    if not src or not dst or src == dst or weight <= 0:
+        return
+    bucket = adjacency.setdefault(str(src), {})
+    prev = bucket.get(str(dst), 0.0)
+    if weight > prev:
+        bucket[str(dst)] = weight
+
+
+def _candidate_tiebreak_key(candidate: dict[str, Any]) -> tuple[str, ...]:
+    triple = candidate.get("triple") or ()
+    n = triple[0] if len(triple) > 0 else None
+    r = triple[1] if len(triple) > 1 else None
+    m = triple[2] if len(triple) > 2 else None
+    r2 = triple[3] if len(triple) > 3 else None
+    b = triple[4] if len(triple) > 4 else None
+    flow_key = (
+        getattr(r, "flow_key", None)
+        or getattr(r2, "flow_key", None)
+        or ""
+    )
+    key = candidate.get("key")
+    if not (isinstance(key, tuple) and len(key) == 2):
+        key = _fact_key(r, r2) if r is not None and r2 is not None else ("", "")
+    r_uuid, r2_uuid = key
+    return (
+        str(flow_key or ""),
+        str(r_uuid or ""),
+        str(r2_uuid or ""),
+        str(getattr(n, "uuid", None) or ""),
+        str(getattr(m, "uuid", None) or ""),
+        str(getattr(b, "uuid", None) or ""),
+        str(candidate.get("identified_entity") or ""),
+        str(candidate.get("text") or ""),
+    )
+
+
+def _distance_rank_key(candidate: dict[str, Any]) -> tuple:
+    return (_candidate_distance(candidate),) + _candidate_tiebreak_key(
+        candidate
+    )
+
+
+def _ppr_rank_key(
+    candidate: dict[str, Any], ppr_scores: dict[str, float]
+) -> tuple:
+    return (_score_candidate_with_ppr(candidate, ppr_scores),) + _candidate_tiebreak_key(
+        candidate
+    )
+
+
+def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        key = candidate["key"]
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = candidate
+            continue
+        if candidate["score"] < existing["score"]:
+            deduped[key] = candidate
+            continue
+        if candidate["score"] == existing["score"] and _candidate_tiebreak_key(
+            candidate
+        ) < _candidate_tiebreak_key(existing):
+            deduped[key] = candidate
+    return sorted(deduped.values(), key=_distance_rank_key)
+
+
+def _merge_variant_candidate_lists(
+    variant_lists: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for local in variant_lists:
+        ordered = sorted(local, key=_distance_rank_key)
+        merged.extend(ordered)
+    return merged
 
 
 def _is_currently_valid(predicate: Predicate) -> bool:
@@ -446,47 +1273,242 @@ def _collect_query_variants(text: str, elements) -> list[str]:
         _add(chunk if isinstance(chunk, str) else None)
         if len(variants) > before:
             added_chunks += 1
+    for extra in _decompose_enumeration_queries(text, elements):
+        _add(extra)
     return variants
+
+
+_ENUMERATION_RE = re.compile(
+    r"\b(what|which|list|ways?|types?|kinds?|events?|books?|items?|"
+    r"changes?|traits?|hobbies|activities)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_enumeration_question(text: str) -> bool:
+    return bool(_ENUMERATION_RE.search(text or ""))
+
+
+def _decompose_enumeration_queries(text: str, elements) -> list[str]:
+    if not _is_enumeration_question(text):
+        return []
+    queries: list[str] = []
+    entities: list[str] = []
+    for token in getattr(elements, "tokens", None) or []:
+        if not isinstance(token, dict):
+            continue
+        label = str(token.get("label") or token.get("ent_type") or "").upper()
+        value = str(token.get("text") or "").strip()
+        if not value:
+            continue
+        if label in {"PERSON", "PER", "ORG", "GPE"} or (
+            value[:1].isupper() and " " not in value
+        ):
+            entities.append(value)
+    relation_terms = [
+        m.group(0).lower()
+        for m in re.finditer(
+            r"\b(books?|read|ways?|types?|kinds?|events?|hobbies|"
+            r"activities|changes?|traits?|friends?|places?)\b",
+            text or "",
+            re.IGNORECASE,
+        )
+    ]
+    seen: set[str] = set()
+    for entity in entities[:4]:
+        for relation in relation_terms[:4]:
+            q = f"{entity} {relation}"
+            key = q.lower()
+            if key not in seen and key != (text or "").strip().lower():
+                seen.add(key)
+                queries.append(q)
+        key = entity.lower()
+        if key not in seen:
+            seen.add(key)
+            queries.append(entity)
+    for relation in relation_terms[:3]:
+        if relation not in seen:
+            seen.add(relation)
+            queries.append(relation)
+    return queries[:8]
+
+
+def _seed_personalization(seeds: list[tuple[str, float, str]]) -> dict[str, float]:
+    weights: dict[str, float] = {}
+    for uuid, distance, _ in seeds:
+        weight = 1.0 / (1.0 + max(0.0, _quantize_distance(distance)))
+        prev = weights.get(uuid)
+        if prev is None or weight > prev:
+            weights[uuid] = weight
+    return weights
+
+
+def _build_adjacency_from_seeds(
+    seed_uuids: list[str],
+    brain_id: str,
+    *,
+    query: str | None = None,
+    query_embedding: list[float] | None = None,
+) -> dict[str, list[tuple[str, float]]]:
+    weighted: dict[str, dict[str, float]] = {}
+    if not seed_uuids:
+        return {}
+    try:
+        neighbors = graph_adapter.get_event_centric_neighbors(
+            seed_uuids, brain_id=brain_id
+        )
+    except Exception:
+        return {}
+    for n, r, m, r2, b in neighbors:
+        if not _is_currently_valid(r) or not _is_currently_valid(r2):
+            continue
+        n_uuid = getattr(n, "uuid", None)
+        m_uuid = getattr(m, "uuid", None)
+        b_uuid = getattr(b, "uuid", None)
+        w1 = _edge_type_weight(r, query=query)
+        w2 = _edge_type_weight(r2, query=query)
+        if query_embedding is not None:
+            for pred, base in ((r, w1), (r2, w2)):
+                emb = getattr(pred, "embeddings", None) or getattr(
+                    pred, "embedding", None
+                )
+                if emb is None:
+                    continue
+                try:
+                    sim = float(cosine_similarity(query_embedding, emb))
+                    boost = 0.5 + 0.5 * max(0.0, sim)
+                    if pred is r:
+                        w1 *= boost
+                    else:
+                        w2 *= boost
+                except Exception:
+                    pass
+        _add_weighted_edge(weighted, n_uuid, m_uuid, w1)
+        _add_weighted_edge(weighted, m_uuid, n_uuid, w1)
+        _add_weighted_edge(weighted, m_uuid, b_uuid, w2)
+        _add_weighted_edge(weighted, b_uuid, m_uuid, w2)
+        if n_uuid and b_uuid:
+            bridge = min(w1, w2) * 0.5
+            _add_weighted_edge(weighted, n_uuid, b_uuid, bridge)
+            _add_weighted_edge(weighted, b_uuid, n_uuid, bridge)
+    return {
+        src: sorted(((dst, weight) for dst, weight in edges.items()), key=lambda x: x[0])
+        for src, edges in sorted(weighted.items(), key=lambda item: item[0])
+    }
+
+
+def _score_candidate_with_ppr(
+    candidate: dict[str, Any], ppr_scores: dict[str, float]
+) -> float:
+    n, _r, m, _r2, b = candidate["triple"]
+    scores = [
+        ppr_scores.get(str(getattr(node, "uuid", "")), 0.0)
+        for node in (n, m, b)
+        if getattr(node, "uuid", None)
+    ]
+    if not scores:
+        return _candidate_distance(candidate)
+    return -max(scores)
+
+
+def _context_looks_insufficient(
+    question: str, text_lines: list[str], passages: list[str]
+) -> bool:
+    blob = "\n".join(text_lines + passages).lower()
+    if len(blob.strip()) < 80:
+        return True
+    tokens = [
+        t
+        for t in re.findall(r"[a-z0-9']+", (question or "").lower())
+        if len(t) > 3
+        and t
+        not in {
+            "what",
+            "which",
+            "when",
+            "where",
+            "who",
+            "does",
+            "did",
+            "have",
+            "has",
+            "been",
+            "with",
+            "from",
+            "about",
+            "would",
+            "could",
+            "their",
+            "there",
+            "this",
+            "that",
+            "mentioned",
+        }
+    ]
+    if not tokens:
+        return False
+    hits = sum(1 for token in tokens if token in blob)
+    return hits / len(tokens) < 0.35
+
+
+def _stabilize_seed_hits(
+    seeds: list[tuple[str, float, str]],
+) -> list[tuple[str, float, str]]:
+    best: dict[str, tuple[float, str]] = {}
+    for uuid, distance, name in seeds:
+        uid = str(uuid or "").strip()
+        if not uid:
+            continue
+        dist = _quantize_distance(distance)
+        prev = best.get(uid)
+        if prev is None or dist < prev[0]:
+            best[uid] = (dist, str(name))
+    return sorted(
+        ((uid, dist, name) for uid, (dist, name) in best.items()),
+        key=lambda item: (item[1], item[0]),
+    )
 
 
 def _seed_nodes_for_text(text: str, brain_id: str) -> list[tuple[str, float, str]]:
     """Return (node_uuid, distance, entity_name) seeds from nodes + relationships."""
-    text_embeddings = embeddings_adapter.embed_text(text)
+    with profile_stage("embed.query"):
+        text_embeddings = embeddings_adapter.embed_text(text)
     embeddings = text_embeddings.embeddings
     seeds: list[tuple[str, float, str]] = []
 
-    node_vectors = vector_search.search_nodes(
-        embeddings,
-        brain_id=brain_id,
-        k=_SEED_K,
-    )
+    with profile_stage("vector.search_nodes", k=_SEED_K):
+        node_vectors = vector_search.search_nodes(
+            embeddings,
+            brain_id=brain_id,
+            k=_SEED_K,
+        )
     for vector in node_vectors:
         meta = vector.metadata or {}
-        uuid = meta.get("uuid")
+        uuid = meta.get("uuid") or getattr(vector, "id", None)
         if not uuid:
             continue
         distance = (
             vector.distance if vector.distance is not None else float("inf")
         )
         name = meta.get("name") or text
-        seeds.append((uuid, float(distance), str(name)))
+        seeds.append((str(uuid), float(distance), str(name)))
 
-    rel_vectors = vector_search.search_relationships(
-        embeddings,
-        brain_id=brain_id,
-        k=_SEED_K,
-    )
+    with profile_stage("vector.search_relationships", k=_SEED_K):
+        rel_vectors = vector_search.search_relationships(
+            embeddings,
+            brain_id=brain_id,
+            k=_SEED_K,
+        )
     for vector in rel_vectors:
         meta = vector.metadata or {}
         distance = (
             vector.distance if vector.distance is not None else float("inf")
         )
-        node_ids = meta.get("node_ids") or []
+        node_ids = sorted(str(n) for n in (meta.get("node_ids") or []) if n)
         for node_id in node_ids:
-            if node_id:
-                seeds.append((str(node_id), float(distance), text))
+            seeds.append((node_id, float(distance), text))
 
-    return seeds
+    return _stabilize_seed_hits(seeds)
 
 
 def _extract_source_chunk_ids(*items: Any) -> list[str]:
@@ -508,299 +1530,572 @@ def _extract_source_chunk_ids(*items: Any) -> list[str]:
     return ids
 
 
-def _retrieve_passages(
-    text: str, brain_id: str, *, limit: int
-) -> list[tuple[str, float, str]]:
-    """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
-    text_embeddings = embeddings_adapter.embed_text(text)
-    vector_hits = vector_search.search_data(
-        text_embeddings.embeddings,
-        brain_id=brain_id,
-        k=max(limit, _PASSAGE_K),
-    )
-    vector_ids: list[str] = []
-    id_to_text: dict[str, str] = {}
-    id_to_distance: dict[str, float] = {}
-    for vector in vector_hits:
-        meta = vector.metadata or {}
-        resource_id = meta.get("resource_id") or getattr(vector, "id", None)
-        if not resource_id:
-            continue
-        resource_id = str(resource_id)
-        vector_ids.append(resource_id)
-        id_to_distance[resource_id] = (
-            float(vector.distance)
-            if vector.distance is not None
-            else float("inf")
-        )
-
-    keyword_ids: list[str] = []
-    try:
-        search_result = data_adapter.search(text, brain_id)
-        for chunk in getattr(search_result, "text_chunks", None) or []:
-            chunk_id = str(getattr(chunk, "id", "") or "")
-            if not chunk_id:
-                continue
-            keyword_ids.append(chunk_id)
-            id_to_text[chunk_id] = getattr(chunk, "text", "") or ""
-    except Exception:
-        pass
-
-    fused = reciprocal_rank_fusion([vector_ids, keyword_ids])
-    ranked_ids = [item for item, _ in fused[:limit]]
-    missing = [cid for cid in ranked_ids if cid not in id_to_text]
-    if missing:
-        try:
-            chunks, _ = data_adapter.get_text_chunks_by_ids(
-                missing, False, brain_id
-            )
-            for chunk in chunks:
-                id_to_text[str(chunk.id)] = chunk.text or ""
-        except Exception:
-            pass
-
-    passages: list[tuple[str, float, str]] = []
-    for chunk_id in ranked_ids:
-        body = (id_to_text.get(chunk_id) or "").strip()
-        if not body:
-            continue
-        score = id_to_distance.get(chunk_id, 1.0 / (1.0 + len(passages)))
-        passages.append((chunk_id, float(score), body))
-    return passages
+def _session_ids_from_text(text: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _SESSION_RE.finditer(text or ""):
+        sid = f"session_{match.group(1)}"
+        if sid not in seen:
+            seen.add(sid)
+            found.append(sid)
+    return found
 
 
-def _flatten_match_path(path: MatchPath) -> list[str]:
-    lines: list[str] = []
-    current: MatchPath | None = path
-    while current is not None:
-        predicate, node = current.path
-        if node is None and not getattr(predicate, "name", None):
-            break
-        parts = []
-        if predicate and getattr(predicate, "name", None):
-            parts.append(_format_kg_item(predicate))
-        if node is not None:
-            parts.append(_format_kg_item(node))
-        if parts:
-            lines.append(" -> ".join(parts))
-        if current.children:
-            current = current.children[0]
-        else:
-            current = None
-    return lines
+def _session_ids_for_chunks(
+    chunk_ids: list[str], chunk_sessions: dict[str, list[str]]
+) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for chunk_id in chunk_ids:
+        for sid in chunk_sessions.get(chunk_id) or []:
+            if sid not in seen:
+                seen.add(sid)
+                found.append(sid)
+    return found
 
 
-async def get_context(request: GetContextRequestBody) -> GetContextResponse:
-    """
-    Retrieve contextual information for a text.
-    """
-
-    elements = _entity_extractor.extract_elements(request.text)
-    variants = _collect_query_variants(request.text, elements)
-    historical_context: list[str] = []
-    source_passages: list[str] = []
-    candidate_lock = threading.Lock()
-    candidates: list[dict[str, Any]] = []
-    seed_hits: list[tuple[str, float, str]] = []
-    passage_hits: list[tuple[str, float, str]] = []
-
-    def _collect_facts_for_variant(text: str) -> None:
-        seeds = _seed_nodes_for_text(text, request.brain_id)
-        if not seeds:
-            return
-        with candidate_lock:
-            seed_hits.extend(seeds)
-        uuid_to_distance: dict[str, float] = {}
-        for uuid, distance, _ in seeds:
-            prev = uuid_to_distance.get(uuid)
-            if prev is None or distance < prev:
-                uuid_to_distance[uuid] = distance
-        seed_uuids = list(uuid_to_distance.keys())
-        neighbors = graph_adapter.get_event_centric_neighbors(
-            seed_uuids, brain_id=request.brain_id
-        )
-        local: list[dict[str, Any]] = []
-        for n, r, m, r2, b in neighbors:
-            if not _is_currently_valid(r) or not _is_currently_valid(r2):
-                continue
-            distances = [
-                uuid_to_distance[u]
-                for u in (
-                    getattr(n, "uuid", None),
-                    getattr(m, "uuid", None),
-                    getattr(b, "uuid", None),
-                )
-                if u in uuid_to_distance
-            ]
-            score = min(distances) if distances else float("inf")
-            local.append(
-                {
-                    "identified_entity": text,
-                    "triple": (n, r, m, r2, b),
-                    "score": score,
-                    "key": _fact_key(r, r2),
-                    "text": _format_event_fact(n, r, m, r2, b),
-                    "chunk_ids": _extract_source_chunk_ids(n, r, m, r2, b),
-                }
-            )
-        if local:
-            with candidate_lock:
-                candidates.extend(local)
-
-    def _collect_passages() -> None:
-        nonlocal passage_hits
-        passage_hits = _retrieve_passages(
-            request.text,
-            request.brain_id,
-            limit=max(1, int(getattr(request, "max_passages", 8) or 8)),
-        )
-
-    async def _get_historical_context():
-        nonlocal historical_context
-        passages = await asyncio.to_thread(
-            _retrieve_passages,
-            request.text,
-            request.brain_id,
-            limit=max(request.historical_limit, _PASSAGE_K),
-        )
-        if passages:
-            historical_context = [text for _, _, text in passages[: request.historical_limit]]
-            return historical_context
-        text_chunks, structured_data = await asyncio.gather(
-            asyncio.to_thread(
-                data_adapter.get_last_text_chunks,
-                brain_id=request.brain_id,
-                limit=request.historical_limit,
-            ),
-            asyncio.to_thread(
-                data_adapter.get_last_structured_data,
-                brain_id=request.brain_id,
-                limit=request.historical_limit,
-            ),
-        )
-        historical_context = [text_chunk.text for text_chunk in text_chunks] + [
-            json.dumps(structured_data.data)
-            for structured_data in structured_data
-            if len(structured_data.data.items()) > 0
-        ]
-        return historical_context
-
-    futures = [
-        asyncio.to_thread(_collect_facts_for_variant, variant) for variant in variants
-    ]
-    futures.append(asyncio.to_thread(_collect_passages))
-    futures.append(_get_historical_context())
-    await asyncio.gather(*futures)
-
-    deduped: dict[tuple[str, str], dict[str, Any]] = {}
-    for candidate in candidates:
-        key = candidate["key"]
-        existing = deduped.get(key)
-        if existing is None or candidate["score"] < existing["score"]:
-            deduped[key] = candidate
-
-    ranked = sorted(deduped.values(), key=lambda c: c["score"])
-    max_facts = max(1, int(getattr(request, "max_facts", 40) or 40))
-
-    if getattr(request, "apply_fact_filter", True) and ranked:
-        keep = filter_relevant_facts(
-            request.text,
-            [c["text"] for c in ranked],
-            max_keep=max_facts,
-        )
-        curated = [ranked[i] for i in keep if 0 <= i < len(ranked)]
-        if not curated:
-            curated = ranked[:max_facts]
-    else:
-        curated = ranked[:max_facts]
-
+def _build_fact_channel(
+    curated: list[dict[str, Any]],
+    chunk_sessions: dict[str, list[str]],
+) -> tuple[list[str], list[GetContextTriple], list[str]]:
     text_lines: list[str] = []
     triples: list[GetContextTriple] = []
-    provenance_ids: list[str] = []
+    graph_session_ids: list[str] = []
+    seen_sessions: set[str] = set()
     for candidate in curated:
         n, r, m, r2, b = candidate["triple"]
-        text_lines.append(candidate["text"])
+        chunk_ids = list(candidate.get("chunk_ids") or [])
+        session_ids = _candidate_session_ids(candidate)
+        if not session_ids:
+            session_ids = _session_ids_for_chunks(chunk_ids, chunk_sessions)
+        line = candidate["text"]
+        if session_ids:
+            line = f"{line} ({', '.join(session_ids)})"
+        text_lines.append(line)
         triples.append(
             GetContextTriple(
                 identified_entity=candidate["identified_entity"],
                 triple=(n, r, m, r2, b),
+                source_chunk_ids=chunk_ids or None,
+                source_session_ids=session_ids or None,
             )
         )
-        provenance_ids.extend(candidate.get("chunk_ids") or [])
+        for sid in session_ids:
+            if sid not in seen_sessions:
+                seen_sessions.add(sid)
+                graph_session_ids.append(sid)
+    graph_session_ids.sort()
+    return text_lines, triples, graph_session_ids
 
+
+def _retrieve_passages(
+    text: str, brain_id: str, *, limit: int
+) -> list[tuple[str, float, str]]:
+    """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
+    with profile_stage("passages.retrieve", blocking=True, queries=1):
+        with profile_stage("embed.query"):
+            text_embeddings = embeddings_adapter.embed_text(text)
+        with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
+            vector_hits = vector_search.search_data(
+                text_embeddings.embeddings,
+                brain_id=brain_id,
+                k=max(limit, _PASSAGE_K),
+            )
+        vector_ids: list[str] = []
+        id_to_text: dict[str, str] = {}
+        id_to_distance: dict[str, float] = {}
+        for vector in vector_hits:
+            meta = vector.metadata or {}
+            resource_id = meta.get("resource_id") or getattr(vector, "id", None)
+            if not resource_id:
+                continue
+            resource_id = str(resource_id)
+            vector_ids.append(resource_id)
+            id_to_distance[resource_id] = (
+                float(vector.distance)
+                if vector.distance is not None
+                else float("inf")
+            )
+
+        keyword_ids: list[str] = []
+        with profile_stage("data.keyword_search"):
+            try:
+                search_result = data_adapter.search(text, brain_id)
+                for chunk in getattr(search_result, "text_chunks", None) or []:
+                    chunk_id = str(getattr(chunk, "id", "") or "")
+                    if not chunk_id:
+                        continue
+                    keyword_ids.append(chunk_id)
+                    id_to_text[chunk_id] = getattr(chunk, "text", "") or ""
+            except Exception:
+                pass
+
+        fused = reciprocal_rank_fusion([vector_ids, keyword_ids])
+        ranked_ids = [item for item, _ in fused[:limit]]
+        missing = [cid for cid in ranked_ids if cid not in id_to_text]
+        if missing:
+            with profile_stage("data.fetch_chunks", chunks=len(missing)):
+                try:
+                    chunks, _ = data_adapter.get_text_chunks_by_ids(
+                        missing, False, brain_id
+                    )
+                    for chunk in chunks:
+                        id_to_text[str(chunk.id)] = chunk.text or ""
+                except Exception:
+                    pass
+
+        passages: list[tuple[str, float, str]] = []
+        for chunk_id in ranked_ids:
+            body = (id_to_text.get(chunk_id) or "").strip()
+            if not body:
+                continue
+            score = id_to_distance.get(chunk_id, 1.0 / (1.0 + len(passages)))
+            passages.append((chunk_id, float(score), body))
+        return passages
+
+
+async def get_context(
+    request: GetContextRequestBody,
+    *,
+    fact_filter_adapter: Any = None,
+) -> GetContextResponse:
+    """
+    Retrieve contextual information for a text.
+
+    `fact_filter_adapter` is only supplied by deep-navigation callers: the
+    one-shot context path leaves it unset because an LLM call does not fit the
+    sub-second budget, and without it no fact filtering happens.
+
+    `profile_stages` attaches a per-stage wall-clock breakdown to the response
+    and publishes it as a latency trace event; it is off unless the caller asks
+    for it or `TRACE_STAGE_PROFILER_ENABLED` is set.
+    """
+    with profile_request(
+        "retrieve.context", enabled=request.profile_stages
+    ) as profiler:
+        response = await _build_context(request, fact_filter_adapter)
+    if profiler is not None:
+        response.stage_timings = profiler.last_report
+    return response
+
+
+async def _build_context(
+    request: GetContextRequestBody,
+    fact_filter_adapter: Any,
+) -> GetContextResponse:
+    with profile_stage("nlp.extract_elements"):
+        elements = _entity_extractor.extract_elements(request.text)
+    with profile_stage("nlp.query_variants") as detail:
+        variants = _collect_query_variants(request.text, elements)
+        detail["variants"] = len(variants)
+    max_passages = max(1, request.max_passages)
+    historical_context: list[str] = []
+    source_passages: list[str] = []
+    candidates: list[dict[str, Any]] = []
+    seed_hits: list[tuple[str, float, str]] = []
+    passage_hits: list[tuple[str, float, str]] = []
+
+    def _collect_facts_for_variant(
+        text: str,
+    ) -> tuple[list[tuple[str, float, str]], list[dict[str, Any]]]:
+        with profile_stage("facts.variant") as detail:
+            with profile_stage("facts.seed_search"):
+                seeds = _seed_nodes_for_text(text, request.brain_id)
+            detail["seeds"] = len(seeds)
+            if not seeds:
+                return [], []
+            uuid_to_distance: dict[str, float] = {}
+            for uuid, distance, _ in seeds:
+                dist = _quantize_distance(distance)
+                prev = uuid_to_distance.get(uuid)
+                if prev is None or dist < prev:
+                    uuid_to_distance[uuid] = dist
+            seed_uuids = sorted(
+                uuid_to_distance.keys(),
+                key=lambda uid: (uuid_to_distance[uid], uid),
+            )
+            with profile_stage(
+                "graph.event_neighbors", seed_uuids=len(seed_uuids)
+            ) as neighbors_detail:
+                neighbors = graph_adapter.get_event_centric_neighbors(
+                    seed_uuids, brain_id=request.brain_id
+                )
+                neighbors_detail["rows"] = len(neighbors)
+            local: list[dict[str, Any]] = []
+            with profile_stage("facts.assemble"):
+                for n, r, m, r2, b in neighbors:
+                    if not _is_currently_valid(r) or not _is_currently_valid(r2):
+                        continue
+                    distances = [
+                        uuid_to_distance[u]
+                        for u in (
+                            getattr(n, "uuid", None),
+                            getattr(m, "uuid", None),
+                            getattr(b, "uuid", None),
+                        )
+                        if u in uuid_to_distance
+                    ]
+                    score = min(distances) if distances else float("inf")
+                    local.append(
+                        {
+                            "identified_entity": text,
+                            "triple": (n, r, m, r2, b),
+                            "score": score,
+                            "key": _fact_key(r, r2),
+                            "text": _format_event_fact(n, r, m, r2, b),
+                            "chunk_ids": _extract_source_chunk_ids(n, r, m, r2, b),
+                        }
+                    )
+            return list(seeds), local
+
+    def _collect_passages() -> None:
+        nonlocal passage_hits
+        with profile_stage("passages.collect") as detail:
+            queries = [request.text] + [
+                v
+                for v in variants
+                if v.strip().lower() != request.text.strip().lower()
+            ]
+            if _is_enumeration_question(request.text):
+                queries = queries[:6]
+            else:
+                queries = queries[:3]
+            detail["queries"] = len(queries)
+            fused_lists: list[list[str]] = []
+            id_to_text: dict[str, str] = {}
+            id_to_score: dict[str, float] = {}
+            for query in queries:
+                hits = _retrieve_passages(
+                    query,
+                    request.brain_id,
+                    limit=max(max_passages, _PASSAGE_K),
+                )
+                ordered_ids: list[str] = []
+                for chunk_id, score, body in hits:
+                    ordered_ids.append(chunk_id)
+                    id_to_text[chunk_id] = body
+                    prev = id_to_score.get(chunk_id)
+                    if prev is None or score < prev:
+                        id_to_score[chunk_id] = score
+                if ordered_ids:
+                    fused_lists.append(ordered_ids)
+            if not fused_lists:
+                passage_hits = []
+                return
+            fused = reciprocal_rank_fusion(fused_lists)
+            ranked_ids = [item for item, _ in fused[: max(max_passages, _PASSAGE_K)]]
+            passage_hits = [
+                (cid, id_to_score.get(cid, 1.0), id_to_text.get(cid, ""))
+                for cid in ranked_ids
+                if id_to_text.get(cid)
+            ]
+
+    async def _get_historical_context():
+        nonlocal historical_context
+        with profile_stage("historical.context", blocking=False):
+            passages = await asyncio.to_thread(
+                _retrieve_passages,
+                request.text,
+                request.brain_id,
+                limit=max(request.historical_limit, _PASSAGE_K),
+            )
+            if passages:
+                historical_context = [
+                    text for _, _, text in passages[: request.historical_limit]
+                ]
+                return historical_context
+            with profile_stage("historical.fallback", blocking=False):
+                text_chunks, structured_data = await asyncio.gather(
+                    asyncio.to_thread(
+                        data_adapter.get_last_text_chunks,
+                        brain_id=request.brain_id,
+                        limit=request.historical_limit,
+                    ),
+                    asyncio.to_thread(
+                        data_adapter.get_last_structured_data,
+                        brain_id=request.brain_id,
+                        limit=request.historical_limit,
+                    ),
+                )
+            historical_context = [text_chunk.text for text_chunk in text_chunks] + [
+                json.dumps(structured_data.data)
+                for structured_data in structured_data
+                if len(structured_data.data.items()) > 0
+            ]
+            return historical_context
+
+    with profile_stage(
+        "retrieval.fanout", blocking=False, variants=len(variants)
+    ):
+        fact_futures = [
+            asyncio.to_thread(_collect_facts_for_variant, variant)
+            for variant in variants
+        ]
+        other_futures = [
+            asyncio.to_thread(_collect_passages),
+            _get_historical_context(),
+        ]
+        all_results = await asyncio.gather(*fact_futures, *other_futures)
+        variant_outputs = all_results[: len(variants)]
+
+    seed_hits = []
+    variant_lists: list[list[dict[str, Any]]] = []
+    for seeds, local in variant_outputs:
+        seed_hits.extend(seeds)
+        variant_lists.append(local)
+    candidates = _merge_variant_candidate_lists(variant_lists)
+
+    bridge_paths: list[dict[str, Any]] = []
+    with profile_stage(
+        "facts.bridge_expand",
+        bridges=request.cross_event_bridges,
+    ) as detail:
+        candidates, bridge_paths = _expand_cross_event_bridges(
+            candidates,
+            request.brain_id,
+            max_per_hub=request.cross_event_bridges,
+        )
+        detail["candidates"] = len(candidates)
+        detail["paths"] = len(bridge_paths)
+
+    with profile_stage("facts.dedup_rank") as detail:
+        ranked = _dedupe_candidates(candidates)
+        detail["candidates"] = len(candidates)
+        detail["deduped"] = len(ranked)
+
+    if request.use_ppr and seed_hits and ranked:
+        with profile_stage("ppr"):
+            personalization = _seed_personalization(seed_hits)
+            with profile_stage(
+                "ppr.adjacency", seeds=len(personalization)
+            ) as adjacency_detail:
+                adjacency = _build_adjacency_from_seeds(
+                    sorted(personalization.keys()),
+                    request.brain_id,
+                    query=request.text,
+                )
+                adjacency_detail["nodes"] = len(adjacency)
+            with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
+                ppr_scores = personalized_pagerank(
+                    adjacency,
+                    personalization,
+                    damping=_PPR_DAMPING,
+                    iterations=_PPR_ITERS,
+                )
+            if ppr_scores:
+                with profile_stage("ppr.reorder", scored=len(ppr_scores)):
+                    for candidate in ranked:
+                        n, _r, m, _r2, b = candidate["triple"]
+                        masses = [
+                            ppr_scores.get(str(getattr(node, "uuid", "")), 0.0)
+                            for node in (n, m, b)
+                            if getattr(node, "uuid", None)
+                        ]
+                        candidate["ppr_mass"] = max(masses) if masses else 0.0
+                    ranked = sorted(
+                        ranked, key=lambda c: _ppr_rank_key(c, ppr_scores)
+                    )
+
+    max_facts = max(0, request.max_facts)
+
+    provenance_ids: list[str] = []
+    for candidate in ranked:
+        provenance_ids.extend(candidate.get("chunk_ids") or [])
     for chunk_id, _, body in passage_hits:
         if body and body not in source_passages:
             source_passages.append(body)
         if chunk_id not in provenance_ids:
             provenance_ids.append(chunk_id)
 
+    chunk_sessions: dict[str, list[str]] = {}
     if provenance_ids:
-        try:
-            chunks, _ = await asyncio.to_thread(
-                data_adapter.get_text_chunks_by_ids,
-                provenance_ids[:40],
-                False,
-                request.brain_id,
-            )
-            for chunk in chunks:
-                body = (chunk.text or "").strip()
-                if body and body not in source_passages:
-                    source_passages.append(body)
-        except Exception:
-            pass
+        with profile_stage(
+            "provenance.chunks",
+            blocking=False,
+            chunk_ids=len(provenance_ids[:80]),
+        ):
+            try:
+                chunks, _ = await asyncio.to_thread(
+                    data_adapter.get_text_chunks_by_ids,
+                    provenance_ids[:80],
+                    False,
+                    request.brain_id,
+                )
+                for chunk in chunks:
+                    body = (chunk.text or "").strip()
+                    chunk_id = str(getattr(chunk, "id", "") or "")
+                    if chunk_id and body:
+                        sessions = _session_ids_from_text(body)
+                        if sessions:
+                            chunk_sessions[chunk_id] = sessions
+                    if body and body not in source_passages:
+                        source_passages.append(body)
+            except Exception:
+                pass
 
-    max_passages = max(1, int(getattr(request, "max_passages", 8) or 8))
+    for candidate in ranked:
+        if not candidate.get("session_ids"):
+            candidate["session_ids"] = _session_ids_for_chunks(
+                list(candidate.get("chunk_ids") or []), chunk_sessions
+            )
+
+    response_topics: list[dict[str, Any]] = []
+    with profile_stage("topics.coarse_to_fine") as topic_detail:
+        try:
+            from src.core.saving.topic_hyperedges import select_topics_and_sessions
+
+            memberships = graph_adapter.list_topic_memberships(request.brain_id)
+            seed_sessions: list[str] = []
+            seen_seed: set[str] = set()
+            for candidate in ranked:
+                for sid in _candidate_session_ids(candidate):
+                    if sid not in seen_seed:
+                        seen_seed.add(sid)
+                        seed_sessions.append(sid)
+            response_topics, preferred_sessions = select_topics_and_sessions(
+                request.text,
+                memberships,
+                seed_sessions,
+                k_topics=10,
+                k_sessions=10,
+            )
+            preferred = set(preferred_sessions)
+            topic_detail["topics"] = len(response_topics)
+            topic_detail["preferred_sessions"] = len(preferred)
+            if preferred:
+                for candidate in ranked:
+                    sessions = set(_candidate_session_ids(candidate))
+                    if sessions & preferred:
+                        candidate["topic_preferred"] = True
+        except Exception as exc:
+            topic_detail["error"] = str(exc)[:120]
+
+    with profile_stage("facts.diversify", max_facts=max_facts) as detail:
+        if request.apply_fact_filter and fact_filter_adapter is not None and ranked:
+            detail["filter_applied"] = True
+            keep = filter_relevant_facts(
+                request.text,
+                [c["text"] for c in ranked],
+                llm_adapter=fact_filter_adapter,
+                max_keep=max(max_facts, len(ranked)),
+            )
+            filtered = [ranked[i] for i in keep if 0 <= i < len(ranked)]
+            if not filtered:
+                filtered = ranked
+        else:
+            detail["filter_applied"] = False
+            filtered = ranked
+        filtered = _rank_facts_with_completeness(filtered)
+        curated = _diversify_facts(filtered, max_facts=max_facts)
+        detail["candidates"] = len(filtered)
+        detail["curated"] = len(curated)
+
+    temporal_conflicts = _temporal_conflict_meta(curated)
+
+    text_lines, triples, graph_session_ids = _build_fact_channel(
+        curated, chunk_sessions
+    )
+
     source_passages = source_passages[:max_passages]
 
-    entity_scores: dict[str, float] = {}
-    for _uuid, distance, entity_name in seed_hits:
-        name = (entity_name or "").strip()
-        if not name:
-            continue
-        if name.lower() == request.text.strip().lower():
-            continue
-        prev = entity_scores.get(name)
-        if prev is None or distance < prev:
-            entity_scores[name] = distance
-    top_entities = [
-        name
-        for name, _ in sorted(entity_scores.items(), key=lambda item: item[1])[
-            :_MAX_DOSSIER_ENTITIES
-        ]
-    ]
+    insufficient = False
+    if request.sufficiency_retry:
+        with profile_stage("sufficiency.check") as detail:
+            insufficient = _context_looks_insufficient(
+                request.text, text_lines, source_passages + historical_context
+            )
+            detail["fired"] = insufficient
 
-    dossier_lines: list[str] = []
-    if top_entities:
-
-        def _run_dossiers() -> list[str]:
-            lines: list[str] = []
-            retriever = EventSynergyRetriever(request.brain_id)
-            for entity_name in top_entities:
-                try:
-                    path = retriever.retrieve_matches(
-                        entity_name,
-                        request.text,
-                        max_depth=_DOSSIER_MAX_DEPTH,
+    if insufficient:
+        with profile_stage("sufficiency.retry", blocking=False) as detail:
+            followups = _decompose_enumeration_queries(request.text, elements)
+            if not followups:
+                tokens = [
+                    t
+                    for t in re.findall(r"[A-Za-z][A-Za-z']+", request.text)
+                    if len(t) > 3
+                ]
+                followups = [" ".join(tokens[:4])] if tokens else []
+            detail["followups"] = len(followups[:3])
+            extra_passages: list[tuple[str, float, str]] = []
+            extra_variant_lists: list[list[dict[str, Any]]] = []
+            for query in followups[:3]:
+                extra_passages.extend(
+                    await asyncio.to_thread(
+                        _retrieve_passages,
+                        query,
+                        request.brain_id,
+                        limit=max_passages,
                     )
+                )
+                seeds, local = await asyncio.to_thread(
+                    _collect_facts_for_variant, query
+                )
+                seed_hits.extend(seeds)
+                extra_variant_lists.append(local)
+            for chunk_id, _, body in extra_passages:
+                if body and body not in source_passages:
+                    source_passages.append(body)
+                if chunk_id not in provenance_ids:
+                    provenance_ids.append(chunk_id)
+            source_passages = source_passages[:max_passages]
+            candidates.extend(_merge_variant_candidate_lists(extra_variant_lists))
+            ranked = _dedupe_candidates(candidates)
+            for candidate in ranked:
+                if not candidate.get("session_ids"):
+                    candidate["session_ids"] = _session_ids_for_chunks(
+                        list(candidate.get("chunk_ids") or []), chunk_sessions
+                    )
+            curated = _diversify_facts(
+                _rank_facts_with_completeness(ranked), max_facts=max_facts
+            )
+            temporal_conflicts = _temporal_conflict_meta(curated)
+            for candidate in curated:
+                for chunk_id in candidate.get("chunk_ids") or []:
+                    if chunk_id not in provenance_ids:
+                        provenance_ids.append(chunk_id)
+            missing_ids = [
+                cid for cid in provenance_ids[:80] if cid not in chunk_sessions
+            ]
+            if missing_ids:
+                try:
+                    chunks, _ = await asyncio.to_thread(
+                        data_adapter.get_text_chunks_by_ids,
+                        missing_ids,
+                        False,
+                        request.brain_id,
+                    )
+                    for chunk in chunks:
+                        body = (chunk.text or "").strip()
+                        chunk_id = str(getattr(chunk, "id", "") or "")
+                        if chunk_id and body:
+                            sessions = _session_ids_from_text(body)
+                            if sessions:
+                                chunk_sessions[chunk_id] = sessions
                 except Exception:
-                    continue
-                if path is None or path.target_node is None:
-                    continue
-                flattened = _flatten_match_path(path)
-                if not flattened:
-                    continue
-                target_name = getattr(path.target_node, "name", None) or entity_name
-                lines.append(f"[dossier:{target_name}] " + " | ".join(flattened))
-            return lines
+                    pass
+            text_lines, triples, graph_session_ids = _build_fact_channel(
+                curated, chunk_sessions
+            )
 
-        dossier_lines = await asyncio.to_thread(_run_dossiers)
+    response_paths = _paths_for_curated(bridge_paths, curated)
 
-    passage_block = [f"[passage] {p}" for p in source_passages]
-    text_context = "\n".join(passage_block + text_lines + dossier_lines)
+    with profile_stage("context.render", passages=len(source_passages)):
+        topic_block = [
+            f"[topic] {t.get('label')}"
+            for t in response_topics
+            if isinstance(t, dict) and t.get("label")
+        ]
+        passage_block = [f"[passage] {p}" for p in source_passages]
+        text_context = "\n".join(topic_block + passage_block + text_lines)
 
     return GetContextResponse(
         text_context=text_context,
         triples=triples,
         historical_context=historical_context,
         source_passages=source_passages,
+        graph_session_ids=graph_session_ids or None,
+        temporal_conflicts=temporal_conflicts or None,
+        paths=response_paths or None,
+        topics=response_topics or None,
     )

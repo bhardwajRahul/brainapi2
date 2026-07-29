@@ -28,7 +28,6 @@ Entities Found by Scout: [
     {{"uuid": "uuid_2", "type": "EVENT", "name": "WENT_TO", "description": "John went to New York City"}},
     {{"uuid": "uuid_3", "type": "CITY", "name": "New York City"}},
     {{"uuid": "uuid_4", "type": "EVENT", "name": "KNEW", "description": "John knew 12 new friends in New York City"}},
-    {{"uuid": "uuid_5", "type": "UNIT", "name": "Friends", "description": "The number of friends John knew in New York City"}},
     {{"uuid": "uuid_6", "type": "PERSON", "name": "Mary"}},
     {{"uuid": "uuid_7", "type": "EVENT", "name": "WAS_IN", "description": "Mary was in San Francisco"}},
     {{"uuid": "uuid_8", "type": "CITY", "name": "San Francisco"}},
@@ -56,6 +55,7 @@ Example output 1 (in the real output "tail" and "tip" must be the full entity ob
             "tail": "uuid_1",
             "name": "ACCOMPLISHED_ACTION",
             "description": "John knew 12 new friends in New York City",
+            "amount": 12,
             "tip": "uuid_4"
         }},
         {{
@@ -63,12 +63,6 @@ Example output 1 (in the real output "tail" and "tip" must be the full entity ob
             "name": "HAPPENED_WITHIN",
             "description": "John knew 12 new friends when he went to New York City",
             "tip": "uuid_2"
-        }},
-        {{
-            "tail": "uuid_4",
-            "name": "TARGETED",
-            "description": "John knew 12 new friends in New York City",
-            "tip": "uuid_5"
         }},
         {{
             "tail": "uuid_6",
@@ -106,7 +100,6 @@ Entities Found by Scout: [
     {{"uuid": "uuid_8", "type": "ROLE", "name": "CEO", "description": "Mark Johnson covered the role of CEO of Acme Inc."}},
     {{"uuid": "uuid_9", "type": "EVENT", "name": "COVERED_ROLE", "description": "Mark Johnson was the founder of Acme Inc."}},
     {{"uuid": "uuid_10", "type": "EVENT", "name": "RAISED", "description": "Acme Inc. raised $100 million in funding", "happened_at": "19/01/2026"}},
-    {{"uuid": "uuid_11", "type": "MONEY", "name": "Money", "description": "The amount of money Acme Inc. raised in funding"}},
 ]
 
 Example output 2:
@@ -126,10 +119,11 @@ Example output 2:
             "tip": "uuid_8"
         }},
         {{
-            "tail": "uuid_10",
-            "name": "TARGETED",
+            "tail": "uuid_1",
+            "name": "MADE",
             "description": "Acme Inc. raised $100 million in funding",
-            "tip": "uuid_11"
+            "amount": 100000000,
+            "tip": "uuid_10"
         }},
         ... more relationships ...
     ],
@@ -151,7 +145,7 @@ DIRECTIONAL SLOT-FILLING:
 - "tip": The end of the arrow (The Destination/Target, the object being affected).
 - FORBIDDEN: Never swap "tail" and "tip": for an initiation vector the Actor is ALWAYS the "tail" and the Event is ALWAYS the "tip"; for a target vector the Event is ALWAYS the "tail" and the Recipient is ALWAYS the "tip".
 - FORBIDDEN: Never link Actor nodes directly to Target nodes for dynamic actions.
-- FORBIDDEN: Never create nodes for numeric quantities.
+- FORBIDDEN: Never create nodes for numeric quantities, for their units, or placeholder nodes named after their own type (eg: MONEY:"Money", UNIT:"Friends"): node identity is derived from name and type, so every quantity in the graph would collapse onto one shared node. Carry the quantity as the 'amount' property of the relationship instead.
 
 NEW NODES POLICY:
 - Only add an entity to "new_nodes" if it appears NEITHER in the provided entities list NOR in the previously created relationships.
@@ -161,7 +155,7 @@ LOGIC CHECKLIST:
 - Identify the Actor (Origin).
 - Identify the Event Hub (Action Instance).
 - Identify the Target (Destination).
-- If any quantity is specified in the text and the scout identified a Unit, attach the quantity value as 'amount' to the relationship properties.
+- If any quantity is specified in the text, attach the quantity value as 'amount' to the relationship properties.
 - Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
 
 Remember that the uuids are STANDARD uuids 8-4-4-4-12 hexadecimal character strings.
@@ -245,7 +239,6 @@ Entities Found by Scout: [
     {{"uuid": "uuid_2", "type": "EVENT", "name": "Went", "description": "John went to New York City"}},
     {{"uuid": "uuid_3", "type": "CITY", "name": "New York City"}},
     {{"uuid": "uuid_4", "type": "EVENT", "name": "Knew", "description": "John knew 12 new friends in New York City"}},
-    {{"uuid": "uuid_5", "type": "UNIT", "name": "Friends", "description": "The number of friends John knew in New York City"}},
     {{"uuid": "uuid_6", "type": "PERSON", "name": "Mary"}},
     {{"uuid": "uuid_7", "type": "EVENT", "name": "Was", "description": "Mary was in San Francisco"}},
     {{"uuid": "uuid_8", "type": "CITY", "name": "San Francisco"}},
@@ -280,13 +273,6 @@ Example architect_agent_create_relationship tool input 1:
             "predicate": "HAPPENED_WITHIN",
             "description": "John knew 12 new friends when he went to New York City",
             "object": "uuid_2"
-        }},
-        {{
-            "subject": "uuid_4",
-            "predicate": "TARGETED",
-            "description": "John knew 12 new friends in New York City",
-            "object": "uuid_5",
-            "amount": 12
         }}
 ]}}
 Example architect_agent_create_relationship tool output:
@@ -334,13 +320,13 @@ DIRECTIONAL SLOT-FILLING:
 - "subject": The start of the arrow (The Source of Energy/Origin).
 - "object": The end of the arrow (The Destination/Target).
 - FORBIDDEN: Never link Actor nodes directly to Target nodes for dynamic actions.
-- FORBIDDEN: Never create nodes for numeric quantities.
+- FORBIDDEN: Never create nodes for numeric quantities, for their units, or placeholder nodes named after their own type (eg: MONEY:"Money", UNIT:"Friends"): node identity is derived from name and type, so every quantity in the graph would collapse onto one shared node. Carry the quantity as the 'amount' property of the relationship instead.
 
 LOGIC CHECKLIST:
 - Identify the Actor (Origin).
 - Identify the Event Hub (Action Instance).
 - Identify the Target (Destination).
-- If any quantity is specified in the text and the scout identified a Unit, attach the quantity value as 'amount' to the relationship properties of the relationship with the Unit node.
+- If any quantity is specified in the text, attach the quantity value as 'amount' to the relationship properties of the event's relationships.
 - Nodes/Entities MUST be atomic and not composite (phrases) (eg: "Went to San Francisco" is not atomic, "Went to" + "San Francisco" is atomic)
 
 Your workflow must be:
@@ -376,7 +362,7 @@ Every action must flow through a central **EVENT hub**:
 - **Directional Slot-Filling:** - `subject`: Origin/Source.
   - `object`: Destination/Target.
 - **Forbidden:** - No direct Actor-to-Target links for actions (must use Event hub).
-  - No dedicated nodes for numbers; store quantities as `amount` properties on relationships.
+  - No dedicated nodes for numbers or their units, and no placeholder nodes named after their own type (eg: `MONEY:"Money"`, `UNIT:"Friends"`) — node identity is name plus type, so those collapse onto one shared node. Store quantities as `amount` properties on relationships.
 - **Entity Coverage:** Use 100% of Scout-provided entities. Reuse entities across contexts as needed.
 - **UUIDS:** Use the standard uuids 8-4-4-4-12 hexadecimal character strings.
 - **Relationship Names:** Use general relationship names (eg: "TARGET_PRODUCT_OBJECT_CROISSANTS"=wrong, "TARGETED"=correct)
@@ -418,7 +404,7 @@ Every action must flow through a central **EVENT hub**:
 - **Directional Slot-Filling:** - `subject`: Origin/Source.
   - `object`: Destination/Target.
 - **Forbidden:** - No direct Actor-to-Target links for actions (must use Event hub).
-  - No dedicated nodes for numbers; store quantities as `amount` properties on relationships.
+  - No dedicated nodes for numbers or their units, and no placeholder nodes named after their own type (eg: `MONEY:"Money"`, `UNIT:"Friends"`) — node identity is name plus type, so those collapse onto one shared node. Store quantities as `amount` properties on relationships.
 - **Entity Coverage:** Use 100% of Scout-provided entities. Reuse entities across contexts as needed.
 - **UUIDS:** Use the standard uuids 8-4-4-4-12 hexadecimal character strings.
 - **Relationship Names:** Use general relationship names (eg: "TARGET_PRODUCT_OBJECT_CROISSANTS"=wrong, "TARGETED"=correct)
@@ -449,7 +435,6 @@ Entities Found by Scout: [
     {{"uuid": "uuid_2", "type": "EVENT", "name": "Went", "description": "John went to New York City"}},
     {{"uuid": "uuid_3", "type": "CITY", "name": "New York City"}},
     {{"uuid": "uuid_4", "type": "EVENT", "name": "Knew", "description": "John knew 12 new friends in New York City"}},
-    {{"uuid": "uuid_5", "type": "UNIT", "name": "Friends", "description": "The number of friends John knew in New York City"}},
     {{"uuid": "uuid_6", "type": "PERSON", "name": "Mary"}},
     {{"uuid": "uuid_7", "type": "EVENT", "name": "Was", "description": "Mary was in San Francisco"}},
     {{"uuid": "uuid_8", "type": "CITY", "name": "San Francisco"}},
@@ -484,13 +469,6 @@ Example architect_agent_create_relationship tool input 1:
             "predicate": "HAPPENED_WITHIN",
             "description": "John knew 12 new friends when he went to New York City",
             "object": "uuid_2"
-        }},
-        {{
-            "subject": "uuid_4",
-            "predicate": "TARGETED",
-            "description": "John knew 12 new friends in New York City",
-            "object": "uuid_5",
-            "amount": 12
         }}
 ]}}
 Example architect_agent_create_relationship tool output:

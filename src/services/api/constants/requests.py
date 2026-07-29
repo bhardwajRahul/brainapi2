@@ -393,9 +393,13 @@ class GetContextRequestBody(BaseModel):
     text: str
     brain_id: str = "default"
     historical_limit: int = 10
-    max_facts: int = 40
+    max_facts: int = Field(40, ge=0)
     max_passages: int = 8
     apply_fact_filter: bool = True
+    use_ppr: bool = True
+    sufficiency_retry: bool = False
+    profile_stages: bool = False
+    cross_event_bridges: int = Field(3, ge=0)
 
 
 class GetContextTriple(BaseModel):
@@ -403,6 +407,8 @@ class GetContextTriple(BaseModel):
 
     identified_entity: str
     triple: Tuple[Node, Predicate, Node, Predicate, Node]
+    source_chunk_ids: Optional[List[str]] = None
+    source_session_ids: Optional[List[str]] = None
 
 
 class GetContextResponse(BaseModel):
@@ -412,3 +418,8 @@ class GetContextResponse(BaseModel):
     triples: List[GetContextTriple]
     historical_context: List[str] = []
     source_passages: List[str] = []
+    graph_session_ids: Optional[List[str]] = None
+    temporal_conflicts: Optional[List[dict[str, Any]]] = None
+    paths: Optional[List[dict[str, Any]]] = None
+    topics: Optional[List[dict[str, Any]]] = None
+    stage_timings: Optional[dict[str, Any]] = None

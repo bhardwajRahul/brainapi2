@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.constants.embeddings import Vector
 from src.constants.kg import Node, Predicate
-from src.core.search.entity_info import EventSynergyRetriever, MatchPath
+from src.core.search.entity_info import EventSynergyRetriever
 from src.services.api.constants.requests import GetContextRequestBody
 from src.utils.nlp.ner import ExtractElementsResponse
 
@@ -84,16 +84,18 @@ class CollectQueryVariantsTests(unittest.TestCase):
         self.assertIn("Alice", variants)
         self.assertIn("closest friend", variants)
         self.assertIn("charity event", variants)
-        noun_only = [
-            v
-            for v in variants
-            if v
-            not in {
-                "What did Alice do with her closest friend?",
-                "Alice",
-            }
+        noun_chunks_included = [
+            chunk
+            for chunk in elements.noun_chunks
+            if chunk in variants and chunk != "Alice"
         ]
-        self.assertLessEqual(len(noun_only), retrieve_mod._MAX_NOUN_CHUNKS)
+        self.assertLessEqual(
+            len(noun_chunks_included), retrieve_mod._MAX_NOUN_CHUNKS
+        )
+        self.assertTrue(
+            any("friend" in v.lower() for v in variants[1:]),
+            "enumeration decomposition should add relation-focused subqueries",
+        )
 
 
 class FormatHelpersTests(unittest.TestCase):
@@ -187,19 +189,6 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
                 "extract_elements",
                 return_value=elements,
             ),
-            patch.object(
-                retrieve_mod,
-                "EventSynergyRetriever",
-                return_value=MagicMock(
-                    retrieve_matches=MagicMock(
-                        return_value=MatchPath(
-                            target_node=None,
-                            path=(_pred("", ""), None),
-                            similarity=0.0,
-                        )
-                    )
-                ),
-            ),
         ):
             response = await retrieve_mod.get_context(
                 GetContextRequestBody(text="Alice", brain_id="brain-a", max_facts=40)
@@ -254,19 +243,6 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
                 retrieve_mod._entity_extractor,
                 "extract_elements",
                 return_value=elements,
-            ),
-            patch.object(
-                retrieve_mod,
-                "EventSynergyRetriever",
-                return_value=MagicMock(
-                    retrieve_matches=MagicMock(
-                        return_value=MatchPath(
-                            target_node=None,
-                            path=(_pred("", ""), None),
-                            similarity=0.0,
-                        )
-                    )
-                ),
             ),
         ):
             response = await retrieve_mod.get_context(
@@ -332,19 +308,6 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
                 "extract_elements",
                 return_value=elements,
             ),
-            patch.object(
-                retrieve_mod,
-                "EventSynergyRetriever",
-                return_value=MagicMock(
-                    retrieve_matches=MagicMock(
-                        return_value=MatchPath(
-                            target_node=None,
-                            path=(_pred("", ""), None),
-                            similarity=0.0,
-                        )
-                    )
-                ),
-            ),
         ):
             response = await retrieve_mod.get_context(
                 GetContextRequestBody(text="Alice", brain_id="brain-a", max_facts=1)
@@ -352,7 +315,7 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(response.triples), 1)
 
-    async def test_dossier_lines_appended_to_text_context(self):
+    async def test_context_path_does_not_emit_dossier_lines(self):
         from src.services.api.controllers import retrieve as retrieve_mod
 
         fact = (
@@ -361,21 +324,6 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
             _node("e1", "Meeting", labels=["EVENT"]),
             _pred("r2", "WITH"),
             _node("b", "Bob"),
-        )
-        dossier = MatchPath(
-            target_node=_node("a", "Alice"),
-            path=(_pred("d1", "FRIEND_OF"), _node("b", "Bob")),
-            similarity=0.9,
-            children=[
-                MatchPath(
-                    target_node=_node("a", "Alice"),
-                    path=(
-                        _pred("d2", "LIVES_IN"),
-                        _node("c", "Chicago", labels=["LOCATION"]),
-                    ),
-                    similarity=0.8,
-                )
-            ],
         )
 
         mock_embeddings = MagicMock()
@@ -401,8 +349,6 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
             tokens=[{"text": "Alice", "lemma": "Alice", "pos": "PROPN"}],
             noun_chunks=[],
         )
-        retriever = MagicMock()
-        retriever.retrieve_matches.return_value = dossier
 
         with (
             patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
@@ -414,7 +360,9 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
                 "extract_elements",
                 return_value=elements,
             ),
-            patch.object(retrieve_mod, "EventSynergyRetriever", return_value=retriever),
+            patch(
+                "src.core.search.entity_info.EventSynergyRetriever"
+            ) as synergy_cls,
         ):
             response = await retrieve_mod.get_context(
                 GetContextRequestBody(
@@ -423,8 +371,10 @@ class GetContextRetrievalTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        self.assertIn("[dossier:Alice]", response.text_context)
-        self.assertIn("Chicago", response.text_context)
+        synergy_cls.assert_not_called()
+        self.assertFalse(
+            any(line.startswith("[dossier:") for line in response.text_context.splitlines())
+        )
         self.assertEqual(len(response.triples), 1)
 
 

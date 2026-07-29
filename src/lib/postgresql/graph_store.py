@@ -172,6 +172,26 @@ class PostgreSQLGraphStore:
     );
     CREATE INDEX IF NOT EXISTS idx_kg_relationships_endpoints
         ON kg_relationships(source_uuid, target_uuid);
+    CREATE TABLE IF NOT EXISTS kg_hub_bridges (
+        event_a TEXT NOT NULL,
+        event_b TEXT NOT NULL,
+        shared_entity TEXT NOT NULL,
+        shared_entity_name TEXT NOT NULL DEFAULT '',
+        weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        PRIMARY KEY (event_a, event_b, shared_entity),
+        CHECK (event_a < event_b)
+    );
+    CREATE INDEX IF NOT EXISTS idx_kg_hub_bridges_a ON kg_hub_bridges(event_a);
+    CREATE INDEX IF NOT EXISTS idx_kg_hub_bridges_b ON kg_hub_bridges(event_b);
+    CREATE TABLE IF NOT EXISTS kg_topic_sessions (
+        topic_id TEXT NOT NULL,
+        topic_label TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL,
+        weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        PRIMARY KEY (topic_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_kg_topic_sessions_session
+        ON kg_topic_sessions(session_id);
     """
 
     def __init__(self) -> None:
@@ -786,3 +806,135 @@ class PostgreSQLGraphStore:
                 if limit is not None and len(records) >= limit:
                     return records
         return records
+
+    def replace_hub_bridges(
+        self,
+        brain_id: str,
+        bridges: list[tuple[str, str, str, str, float]],
+    ) -> int:
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM kg_hub_bridges")
+                for event_a, event_b, shared_entity, shared_name, weight in bridges:
+                    if not event_a or not event_b or event_a == event_b:
+                        continue
+                    a, b = (event_a, event_b) if event_a < event_b else (event_b, event_a)
+                    cur.execute(
+                        """
+                        INSERT INTO kg_hub_bridges
+                            (event_a, event_b, shared_entity, shared_entity_name, weight)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (event_a, event_b, shared_entity) DO UPDATE SET
+                            shared_entity_name = EXCLUDED.shared_entity_name,
+                            weight = EXCLUDED.weight
+                        """,
+                        (a, b, shared_entity, shared_name or "", float(weight)),
+                    )
+            conn.commit()
+        return len(bridges)
+
+    def get_hub_bridges_for_events(
+        self,
+        brain_id: str,
+        event_uuids: list[str],
+    ) -> list[tuple[str, str, str, str, float]]:
+        if not event_uuids:
+            return []
+        self._ensure_brain_schema(brain_id)
+        unique = sorted({str(u) for u in event_uuids if u})
+        if not unique:
+            return []
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT event_a, event_b, shared_entity, shared_entity_name, weight
+                    FROM kg_hub_bridges
+                    WHERE event_a = ANY(%s) OR event_b = ANY(%s)
+                    ORDER BY event_a, event_b, shared_entity
+                    """,
+                    (unique, unique),
+                )
+                rows = cur.fetchall()
+        return [
+            (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                str(row[3] or ""),
+                float(row[4] or 1.0),
+            )
+            for row in rows
+        ]
+
+    def count_hub_bridges(self, brain_id: str) -> int:
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM kg_hub_bridges")
+                row = cur.fetchone()
+        return int(row[0] if row else 0)
+
+    def replace_topic_sessions(
+        self,
+        brain_id: str,
+        rows: list[tuple[str, str, str, float]],
+    ) -> int:
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM kg_topic_sessions")
+                for topic_id, topic_label, session_id, weight in rows:
+                    if not topic_id or not session_id:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO kg_topic_sessions
+                            (topic_id, topic_label, session_id, weight)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (topic_id, session_id) DO UPDATE SET
+                            topic_label = EXCLUDED.topic_label,
+                            weight = EXCLUDED.weight
+                        """,
+                        (
+                            topic_id,
+                            topic_label or "",
+                            session_id,
+                            float(weight),
+                        ),
+                    )
+            conn.commit()
+        return len(rows)
+
+    def list_topic_sessions(
+        self, brain_id: str
+    ) -> list[tuple[str, str, str, float]]:
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT topic_id, topic_label, session_id, weight
+                    FROM kg_topic_sessions
+                    ORDER BY topic_id, session_id
+                    """
+                )
+                rows = cur.fetchall()
+        return [
+            (
+                str(row[0]),
+                str(row[1] or ""),
+                str(row[2]),
+                float(row[3] or 1.0),
+            )
+            for row in rows
+        ]
+
+    def count_topic_sessions(self, brain_id: str) -> int:
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM kg_topic_sessions")
+                row = cur.fetchone()
+        return int(row[0] if row else 0)

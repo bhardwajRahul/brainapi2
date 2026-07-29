@@ -16,11 +16,13 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from src.constants.kg import Node, Predicate
+from src.lib.tracing.profiler import profile_stage
 from src.services.kg_agent.main import graph_adapter
 from src.services.kg_agent.main import embeddings_adapter
 from src.services.kg_agent.main import vector_store_adapter
 from src.utils.vector_search import VectorSearchFacade
 from src.utils.similarity.vectors import cosine_similarity
+from src.utils.dates import parse_date_string, to_naive_utc
 
 
 vector_search = VectorSearchFacade(vector_store_adapter)
@@ -43,6 +45,23 @@ class MatchPath(BaseModel):
     children: List["MatchPath"] = Field(default_factory=list)
 
 
+def _recency_score(node: Node) -> float:
+    raw = node.happened_at
+    if not raw:
+        return 1.0
+    happened_at = parse_date_string(raw) if isinstance(raw, str) else raw
+    if not isinstance(happened_at, datetime):
+        print(
+            f"[DEBUG (_recency_score)]: unparseable happened_at {raw!r} "
+            f"on node {node.uuid}, recency left neutral"
+        )
+        return 1.0
+    days_ago = max(0, (datetime.now() - to_naive_utc(happened_at)).days)
+    if days_ago <= 0:
+        return 1.0
+    return 1 / (1 + np.log1p(days_ago))
+
+
 class EventSynergyRetriever:
     def __init__(self, memory_id: str):
         """
@@ -59,9 +78,10 @@ class EventSynergyRetriever:
         current_node_id: str,
         query_embedding: List[float],
     ) -> List[Tuple[Tuple[Predicate, Node], float]]:
-        neighbors = graph_adapter.get_neighbors(
-            [current_node_id], brain_id=self.brain_id
-        )
+        with profile_stage("dossiers.get_neighbors"):
+            neighbors = graph_adapter.get_neighbors(
+                [current_node_id], brain_id=self.brain_id
+            )
         if not neighbors or current_node_id not in neighbors:
             return []
 
@@ -72,11 +92,12 @@ class EventSynergyRetriever:
             v_id = cr.properties.get("v_id") if cr.properties else None
             if v_id is None:
                 continue
-            cr_vs = vector_store_adapter.get_by_ids(
-                [v_id],
-                store="relationships",
-                brain_id=self.brain_id,
-            )
+            with profile_stage("dossiers.edge_vector_fetch"):
+                cr_vs = vector_store_adapter.get_by_ids(
+                    [v_id],
+                    store="relationships",
+                    brain_id=self.brain_id,
+                )
             if not cr_vs or not getattr(cr_vs[0], "embeddings", None):
                 continue
             scored.append(
@@ -164,12 +185,14 @@ class EventSynergyRetriever:
             MatchPath: A hierarchical MatchPath rooted at the resolved target node containing the best-match path(s) and an aggregated similarity score. If the target node or any required embeddings are missing, returns a MatchPath with an empty path and similarity 0.0.
         """
 
-        query_embedding = embeddings_adapter.embed_text(query)
-        target_embedding = embeddings_adapter.embed_text(target)
+        with profile_stage("dossiers.embed", embeds=2):
+            query_embedding = embeddings_adapter.embed_text(query)
+            target_embedding = embeddings_adapter.embed_text(target)
 
-        target_node_vs = vector_search.search_nodes(
-            target_embedding.embeddings, brain_id=self.brain_id
-        )
+        with profile_stage("dossiers.resolve_target"):
+            target_node_vs = vector_search.search_nodes(
+                target_embedding.embeddings, brain_id=self.brain_id
+            )
 
         if not target_node_vs:
             return MatchPath(
@@ -190,7 +213,10 @@ class EventSynergyRetriever:
                 children=[],
             )
 
-        target_node = graph_adapter.get_by_uuid(target_node_id, brain_id=self.brain_id)
+        with profile_stage("dossiers.load_target"):
+            target_node = graph_adapter.get_by_uuid(
+                target_node_id, brain_id=self.brain_id
+            )
 
         if not target_node:
             return MatchPath(
@@ -200,13 +226,16 @@ class EventSynergyRetriever:
                 children=[],
             )
 
-        synergy_paths = self._recursive_explorer(
-            target_node_id,
-            query_embedding.embeddings,
-            depth=max_depth,
-            visited_ids=set(),
-            work_counter=[0],
-        )
+        work_counter = [0]
+        with profile_stage("dossiers.explore", max_depth=max_depth) as detail:
+            synergy_paths = self._recursive_explorer(
+                target_node_id,
+                query_embedding.embeddings,
+                depth=max_depth,
+                visited_ids=set(),
+                work_counter=work_counter,
+            )
+            detail["visited_nodes"] = work_counter[0]
 
         if not synergy_paths:
             return MatchPath(
@@ -222,17 +251,7 @@ class EventSynergyRetriever:
             if not node or not predicate:
                 continue
 
-            days_ago = 0
-            if node.happened_at:
-                try:
-                    happened_at = node.happened_at
-                    if isinstance(happened_at, str):
-                        happened_at = datetime.fromisoformat(happened_at)
-                    days_ago = max(0, (datetime.now() - happened_at).days)
-                except Exception:
-                    days_ago = 0
-            recency = 1 / (1 + np.log1p(days_ago)) if days_ago > 0 else 1.0
-            base_score = similarity * 0.6 + recency * 0.2
+            base_score = similarity * 0.6 + _recency_score(node) * 0.2
 
             match_path = MatchPath(
                 target_node=target_node,

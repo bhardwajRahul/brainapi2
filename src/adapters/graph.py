@@ -829,5 +829,34 @@ class GraphAdapter:
         """
         return self.graph.list_relationships(subject, object, brain_id)
 
+    def get_event_hub_facts(
+        self,
+        event_uuids: list[str],
+        brain_id: str = "default",
+    ) -> list:
+        return self.graph.get_event_hub_facts(event_uuids, brain_id)
+
+    def rebuild_hub_bridge_index(self, brain_id: str = "default") -> int:
+        return self.graph.rebuild_hub_bridge_index(brain_id)
+
+    def get_hub_bridges(
+        self,
+        event_uuids: list[str],
+        brain_id: str = "default",
+    ) -> list:
+        return self.graph.get_hub_bridges(event_uuids, brain_id)
+
+    def rebuild_topic_index(self, brain_id: str = "default") -> int:
+        rebuild = getattr(self.graph, "rebuild_topic_index", None)
+        if rebuild is None:
+            return 0
+        return int(rebuild(brain_id) or 0)
+
+    def list_topic_memberships(self, brain_id: str = "default") -> list:
+        listing = getattr(self.graph, "list_topic_memberships", None)
+        if listing is None:
+            return []
+        return list(listing(brain_id) or [])
+
 
 _graph_adapter = GraphAdapter()

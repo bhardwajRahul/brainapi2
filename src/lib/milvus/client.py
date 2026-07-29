@@ -229,8 +229,11 @@ class MilvusClient(VectorStoreClient):
         except Exception:
             pass
 
+        from src.utils.vector_search import ann_overfetch_k, stable_top_k_vectors
+
+        fetch_k = ann_overfetch_k(k)
         _results = client.search(
-            store, data=[data_vector], limit=k, output_fields=["$meta"]
+            store, data=[data_vector], limit=fetch_k, output_fields=["$meta"]
         )
         results = []
         for query_results in _results:
@@ -247,12 +250,7 @@ class MilvusClient(VectorStoreClient):
                         distance=1.0 - raw_score,
                     )
                 )
-        results.sort(
-            key=lambda x: (
-                float("inf") if x.distance is None else float(x.distance)
-            )
-        )
-        return results
+        return stable_top_k_vectors(results, k)
 
     def get_by_ids(self, ids: list[str], store: str, brain_id: str) -> list[Vector]:
         """

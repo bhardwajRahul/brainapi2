@@ -1670,6 +1670,8 @@ class Neo4jClient(GraphClient):
         MATCH (n)-[r]-(m)-[r2]-(b)
         WHERE n['uuid'] IN ["{uuids_list}"]
         AND r2['flow_key'] = r['flow_key']
+        AND type(r) <> 'HUB_BRIDGE'
+        AND type(r2) <> 'HUB_BRIDGE'
         RETURN
             n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
             r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
@@ -2048,6 +2050,211 @@ class Neo4jClient(GraphClient):
             )
             for record in result.records
         ]
+
+
+    def get_event_hub_facts(
+        self,
+        event_uuids: list[str],
+        brain_id: str,
+    ) -> List[Tuple[Node, Predicate, Node, Predicate, Node]]:
+        unique = sorted({str(u) for u in event_uuids if u})
+        if not unique:
+            return []
+        self.ensure_database(brain_id)
+        uuids_list = '", "'.join(unique)
+        cypher_query = f"""
+        MATCH (n)-[r]-(m)-[r2]-(b)
+        WHERE m['uuid'] IN ["{uuids_list}"]
+        AND r2['flow_key'] = r['flow_key']
+        AND type(r) <> 'HUB_BRIDGE'
+        AND type(r2) <> 'HUB_BRIDGE'
+        AND 'EVENT' IN labels(m)
+        RETURN
+            n['uuid'] as n_uuid, n['name'] as n_name, labels(n) as n_labels, n['description'] as n_description, properties(n) as n_properties, n['polarity'] as n_polarity, n['metadata'] as n_metadata, n['happened_at'] as n_happened_at, n['last_updated'] as n_last_updated, n['observations'] as n_observations,
+            r['uuid'] as r_uuid, type(r) as r_type, r['description'] as r_description, properties(r) as r_properties, r['flow_key'] as r_flow_key, r['last_updated'] as r_last_updated, r['observations'] as r_observations, r['amount'] as r_amount,
+            CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS r_direction,
+            m['uuid'] as m_uuid, m['name'] as m_name, labels(m) as m_labels, m['description'] as m_description, properties(m) as m_properties, m['polarity'] as m_polarity, m['metadata'] as m_metadata, m['happened_at'] as m_happened_at, m['last_updated'] as m_last_updated, m['observations'] as m_observations,
+            r2['uuid'] as r2_uuid, type(r2) as r2_type, r2['description'] as r2_description, properties(r2) as r2_properties, r2['flow_key'] as r2_flow_key, r2['last_updated'] as r2_last_updated, r2['observations'] as r2_observations, r2['amount'] as r2_amount,
+            CASE WHEN startNode(r2) = m THEN 'out' ELSE 'in' END AS r2_direction,
+            b['uuid'] as b_uuid, b['name'] as b_name, labels(b) as b_labels, b['description'] as b_description, properties(b) as b_properties, b['polarity'] as b_polarity, b['metadata'] as b_metadata, b['happened_at'] as b_happened_at, b['last_updated'] as b_last_updated, b['observations'] as b_observations
+        ORDER BY m_uuid, r_uuid, r2_uuid
+        """
+        result = self.driver.execute_query(
+            cypher_query,
+            parameters_={"event_uuids": unique},
+            database_=brain_id,
+        )
+        return [
+            (
+                Node(
+                    uuid=record.get("n_uuid", "") or "",
+                    name=record.get("n_name", "") or "",
+                    labels=record.get("n_labels", []) or [],
+                    description=record.get("n_description", "") or "",
+                    properties=always_dict(record.get("n_properties", {})),
+                    polarity=record.get("n_polarity", "neutral"),
+                    metadata=always_dict(record.get("n_metadata", {})),
+                    happened_at=record.get("n_happened_at", "") or "",
+                    last_updated=record.get("n_last_updated", "") or "",
+                    observations=record.get("n_observations", []) or [],
+                ),
+                Predicate(
+                    uuid=record.get("r_uuid", "") or "",
+                    name=record.get("r_type", "") or "",
+                    description=record.get("r_description", "") or "",
+                    direction=record.get("r_direction", "neutral"),
+                    properties=always_dict(record.get("r_properties", {})),
+                    flow_key=record.get("r_flow_key", "") or "",
+                    last_updated=record.get("r_last_updated", "") or "",
+                    observations=record.get("r_observations", []) or [],
+                    amount=record.get("r_amount"),
+                ),
+                Node(
+                    uuid=record.get("m_uuid", "") or "",
+                    name=record.get("m_name", "") or "",
+                    labels=record.get("m_labels", []) or [],
+                    description=record.get("m_description", "") or "",
+                    properties=always_dict(record.get("m_properties", {})),
+                    polarity=record.get("m_polarity", "neutral"),
+                    metadata=always_dict(record.get("m_metadata", {})),
+                    happened_at=record.get("m_happened_at", "") or "",
+                    last_updated=record.get("m_last_updated", "") or "",
+                    observations=record.get("m_observations", []) or [],
+                ),
+                Predicate(
+                    uuid=record.get("r2_uuid", "") or "",
+                    name=record.get("r2_type", "") or "",
+                    description=record.get("r2_description", "") or "",
+                    direction=record.get("r2_direction", "neutral"),
+                    properties=always_dict(record.get("r2_properties", {})),
+                    flow_key=record.get("r2_flow_key", "") or "",
+                    last_updated=record.get("r2_last_updated", "") or "",
+                    observations=record.get("r2_observations", []) or [],
+                    amount=record.get("r2_amount"),
+                ),
+                Node(
+                    uuid=record.get("b_uuid", "") or "",
+                    name=record.get("b_name", "") or "",
+                    labels=record.get("b_labels", []) or [],
+                    description=record.get("b_description", "") or "",
+                    properties=always_dict(record.get("b_properties", {})),
+                    polarity=record.get("b_polarity", "neutral"),
+                    metadata=always_dict(record.get("b_metadata", {})),
+                    happened_at=record.get("b_happened_at", "") or "",
+                    last_updated=record.get("b_last_updated", "") or "",
+                    observations=record.get("b_observations", []) or [],
+                ),
+            )
+            for record in result.records
+        ]
+
+    def rebuild_hub_bridge_index(self, brain_id: str) -> int:
+        from src.core.saving.hub_bridges import (
+            bridges_from_memberships,
+            entity_event_memberships,
+        )
+
+        self.ensure_database(brain_id)
+        cypher_rows = """
+        MATCH (event)-[r]-(entity)
+        WHERE 'EVENT' IN labels(event)
+          AND NOT 'EVENT' IN labels(entity)
+          AND type(r) <> 'HUB_BRIDGE'
+        RETURN event['uuid'] AS event_uuid,
+               entity['uuid'] AS entity_uuid,
+               entity['name'] AS entity_name,
+               type(r) AS rel_name
+        """
+        result = self.driver.execute_query(cypher_rows, database_=brain_id)
+        rows = [
+            (
+                str(record.get("event_uuid") or ""),
+                str(record.get("entity_uuid") or ""),
+                str(record.get("entity_name") or ""),
+                str(record.get("rel_name") or ""),
+            )
+            for record in result.records
+        ]
+        bridges = bridges_from_memberships(entity_event_memberships(rows))
+        self.driver.execute_query(
+            "MATCH ()-[r:HUB_BRIDGE]->() DELETE r",
+            database_=brain_id,
+        )
+        for bridge in bridges:
+            self.driver.execute_query(
+                """
+                MATCH (a {uuid: $event_a}), (b {uuid: $event_b})
+                WHERE 'EVENT' IN labels(a) AND 'EVENT' IN labels(b)
+                MERGE (a)-[r:HUB_BRIDGE {
+                    shared_entity: $shared_entity
+                }]->(b)
+                SET r.shared_entity_name = $shared_entity_name,
+                    r.weight = $weight,
+                    r.uuid = $bridge_uuid
+                """,
+                parameters_={
+                    "event_a": bridge.event_a,
+                    "event_b": bridge.event_b,
+                    "shared_entity": bridge.shared_entity,
+                    "shared_entity_name": bridge.shared_entity_name,
+                    "weight": float(bridge.weight),
+                    "bridge_uuid": (
+                        f"hub-bridge:{bridge.event_a}:{bridge.event_b}:"
+                        f"{bridge.shared_entity}"
+                    ),
+                },
+                database_=brain_id,
+            )
+        return len(bridges)
+
+    def get_hub_bridges(
+        self,
+        event_uuids: list[str],
+        brain_id: str,
+    ) -> list:
+        from src.core.saving.hub_bridges import HubBridge
+
+        unique = sorted({str(u) for u in event_uuids if u})
+        if not unique:
+            return []
+        self.ensure_database(brain_id)
+        result = self.driver.execute_query(
+            """
+            MATCH (a)-[r:HUB_BRIDGE]-(b)
+            WHERE a['uuid'] IN $uuids OR b['uuid'] IN $uuids
+            RETURN a['uuid'] AS event_a,
+                   b['uuid'] AS event_b,
+                   r.shared_entity AS shared_entity,
+                   r.shared_entity_name AS shared_entity_name,
+                   r.weight AS weight
+            ORDER BY a['uuid'], b['uuid'], r.shared_entity
+            """,
+            parameters_={"uuids": unique},
+            database_=brain_id,
+        )
+        bridges: list[HubBridge] = []
+        seen: set[tuple[str, str, str]] = set()
+        for record in result.records:
+            a = str(record.get("event_a") or "")
+            b = str(record.get("event_b") or "")
+            entity = str(record.get("shared_entity") or "")
+            if not a or not b or a == b:
+                continue
+            lo, hi = (a, b) if a < b else (b, a)
+            key = (lo, hi, entity)
+            if key in seen:
+                continue
+            seen.add(key)
+            bridges.append(
+                HubBridge(
+                    event_a=lo,
+                    event_b=hi,
+                    shared_entity=entity,
+                    shared_entity_name=str(record.get("shared_entity_name") or ""),
+                    weight=float(record.get("weight") or 1.0),
+                )
+            )
+        return bridges
 
 
 _neo4j_client = Neo4jClient()

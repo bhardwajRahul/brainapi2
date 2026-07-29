@@ -205,31 +205,44 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
     def search_vectors(
         self, data_vector: list[float], brain_id: str, store: str, k: int = 10
     ) -> list[Vector]:
+        from src.utils.vector_search import ann_overfetch_k, stable_top_k_vectors
+
         self._ensure_store(store, brain_id)
+        if k <= 0:
+            return []
         table = _table_name(store)
+        fetch_k = ann_overfetch_k(k)
         with self._connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT set_config('hnsw.ef_search', %s, true)",
+                    (str(max(100, fetch_k)),),
+                )
                 cur.execute(
                     f"""
                     SELECT id, uuid, metadata,
                            (embeddings <=> %s::vector) AS distance
                     FROM {table}
-                    ORDER BY embeddings <=> %s::vector
+                    ORDER BY embeddings <=> %s::vector, uuid ASC, id ASC
                     LIMIT %s
                     """,
-                    (data_vector, data_vector, k),
+                    (data_vector, data_vector, fetch_k),
                 )
                 rows = cur.fetchall()
-        results = [
-            Vector(
-                id=str(row["id"]),
-                metadata=dict(row["metadata"] or {}),
-                distance=float(row["distance"]),
+        results: list[Vector] = []
+        for row in rows:
+            metadata = dict(row["metadata"] or {})
+            row_uuid = row.get("uuid")
+            if row_uuid and not metadata.get("uuid"):
+                metadata["uuid"] = str(row_uuid)
+            results.append(
+                Vector(
+                    id=str(row_uuid or row["id"]),
+                    metadata=metadata,
+                    distance=float(row["distance"]),
+                )
             )
-            for row in rows
-        ]
-        results.sort(key=lambda x: x.distance)
-        return results
+        return stable_top_k_vectors(results, k)
 
     def get_by_ids(self, ids: list[str], store: str, brain_id: str) -> list[Vector]:
         if not ids:

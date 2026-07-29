@@ -462,12 +462,31 @@ def _merge_description(
     return f"{existing_clean} | {incoming_clean}"
 
 
+def _is_event_entity(entity) -> bool:
+    if (getattr(entity, "type", None) or "").strip().lower() == "event":
+        return True
+    return any(
+        (str(label) or "").strip().lower() == "event"
+        for label in (getattr(entity, "labels", None) or [])
+    )
+
+
 def _invalidate_superseded_relationships(
     relationship: ArchitectAgentRelationship,
     *,
     brain_id: str,
 ) -> None:
-    """Mark older same-type edges from the same subject as invalid when tip changes."""
+    """Mark older same-type outgoing edges from the same subject as invalid when tip changes.
+
+    Event hub legs are never invalidated: an actor accumulates one leg per event and
+    none of them supersede the others.
+    """
+    if _is_event_entity(relationship.tail) or _is_event_entity(relationship.tip):
+        return
+    if not (relationship.tail.type or "").strip() or not (
+        relationship.tip.type or ""
+    ).strip():
+        return
     try:
         neighbors = graph_adapter.get_neighbors(
             [relationship.tail.uuid], brain_id=brain_id
@@ -480,6 +499,10 @@ def _invalidate_superseded_relationships(
     ).get("source_timestamp")
     for predicate, neighbor in pairs:
         if not predicate or not neighbor:
+            continue
+        if (getattr(predicate, "direction", None) or "").strip().lower() != "out":
+            continue
+        if _is_event_entity(neighbor):
             continue
         if (predicate.name or "").strip().upper() != (relationship.name or "").strip().upper():
             continue
@@ -1011,6 +1034,15 @@ def process_architect_relationships(self, args: dict):
             raise RuntimeError(
                 f"{len(item_errors)} relationship persistence failures"
             )
+
+        try:
+            graph_adapter.rebuild_hub_bridge_index(brain_id)
+        except Exception as e:
+            print(f"[!] Hub bridge index rebuild failed: {e}")
+        try:
+            graph_adapter.rebuild_topic_index(brain_id)
+        except Exception as e:
+            print(f"[!] Topic index rebuild failed: {e}")
 
         if session_id:
             from src.lib.redis.client import _redis_client

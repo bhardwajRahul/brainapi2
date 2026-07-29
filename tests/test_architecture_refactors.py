@@ -62,10 +62,24 @@ class _StubGraphAdapter:
     def get_neighbors(self, *_args, **_kwargs):
         return {}
 
+    def get_nodes_by_uuid(self, *_args, **_kwargs):
+        return []
+
 
 class _StubDataAdapter:
     def get_observations_list(self, *_args, **_kwargs):
         return []
+
+    def search(self, *_args, **_kwargs):
+        return types.SimpleNamespace(text_chunks=[], observations=[])
+
+    def get_text_chunks_by_ids(self, *_args, **_kwargs):
+        return ([], [])
+
+
+class _StubKGAgent:
+    def retrieve_neighbors(self, *_args, **_kwargs):
+        return types.SimpleNamespace(neighbors=[])
 
 
 _stub_input_agents = types.ModuleType("src.services.input.agents")
@@ -76,6 +90,7 @@ _stub_kg_main = types.ModuleType("src.services.kg_agent.main")
 _stub_kg_main.graph_adapter = _StubGraphAdapter()
 _stub_kg_main.vector_store_adapter = _StubVectorStoreAdapter()
 _stub_kg_main.embeddings_adapter = _StubEmbeddingsAdapter()
+_stub_kg_main.kg_agent = _StubKGAgent()
 sys.modules.setdefault("src.services.kg_agent.main", _stub_kg_main)
 
 _stub_data_main = types.ModuleType("src.services.data.main")

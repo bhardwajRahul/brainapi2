@@ -51,6 +51,20 @@ class VectorSimilarityContractTests(unittest.TestCase):
         results = adapter.search_vectors([1.0, 0.0, 0.0], brain_id="b", store="nodes", k=3)
         self.assertEqual([v.id for v in results], ["near", "mid", "far"])
 
+    def test_adapter_equal_distance_tiebreaks_by_uuid(self):
+        from src.adapters.embeddings import VectorStoreAdapter
+        from src.constants.embeddings import Vector
+
+        store = MagicMock()
+        store.search_vectors.return_value = [
+            Vector(id="2", metadata={"uuid": "z"}, distance=0.1),
+            Vector(id="1", metadata={"uuid": "a"}, distance=0.1),
+        ]
+        adapter = VectorStoreAdapter()
+        adapter.add_client(store)
+        results = adapter.search_vectors([1.0], brain_id="b", store="nodes", k=2)
+        self.assertEqual([v.metadata["uuid"] for v in results], ["a", "z"])
+
     def test_milvus_converts_similarity_score_to_cosine_distance(self):
         from src.constants.embeddings import Vector
         from src.lib.milvus.client import MilvusClient

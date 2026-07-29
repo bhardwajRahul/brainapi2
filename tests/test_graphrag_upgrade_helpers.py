@@ -34,7 +34,11 @@ for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
 from src.core.saving.identity import merge_source_chunk_ids, stamp_provenance
-from src.core.search.fact_filter import reciprocal_rank_fusion
+from src.core.search.fact_filter import (
+    filter_relevant_facts,
+    personalized_pagerank,
+    reciprocal_rank_fusion,
+)
 from src.utils.dates import normalize_date_string, resolve_relative_date
 
 
@@ -89,6 +93,32 @@ class RrfTests(unittest.TestCase):
         ranked = [item for item, _ in fused]
         self.assertEqual(ranked[0], "a")
         self.assertIn("b", ranked[:2])
+
+
+class FactFilterTests(unittest.TestCase):
+    def test_fallback_preserves_all_candidates(self):
+        keep = filter_relevant_facts(
+            "What books has Melanie read?",
+            [f"fact-{i}" for i in range(12)],
+            llm_adapter=None,
+            max_keep=4,
+        )
+        self.assertEqual(keep, list(range(12)))
+
+
+class PersonalizedPageRankTests(unittest.TestCase):
+    def test_ppr_concentrates_on_seed_neighborhood(self):
+        adjacency = {
+            "seed": ["a", "b"],
+            "a": ["seed", "c"],
+            "b": ["seed"],
+            "c": ["a"],
+            "far": ["x"],
+            "x": ["far"],
+        }
+        scores = personalized_pagerank(adjacency, {"seed": 1.0}, iterations=30)
+        self.assertGreater(scores["seed"], scores["far"])
+        self.assertGreater(scores["a"], scores["far"])
 
 
 class ScoutChunkingTests(unittest.TestCase):
