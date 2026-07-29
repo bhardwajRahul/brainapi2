@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import re
 
@@ -13,6 +13,16 @@ _DATE_INPUT_FORMATS = (
     "%b %d %Y",
     "%d %B %Y",
     "%d %b %Y",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S.%f%z",
+    "%I:%M %p on %d %B, %Y",
+    "%I:%M %p on %d %b, %Y",
 )
 
 _RELATIVE_PATTERNS = (
@@ -56,15 +66,22 @@ def _shift_months(ref: datetime, delta: int) -> datetime:
     return ref.replace(year=year, month=month, day=day)
 
 
+def to_naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def parse_date_string(value: Optional[str]) -> Optional[datetime]:
     if not value or not isinstance(value, str):
         return None
     cleaned = value.strip()
     for fmt in _DATE_INPUT_FORMATS:
         try:
-            return datetime.strptime(cleaned, fmt)
+            parsed = datetime.strptime(cleaned, fmt)
         except ValueError:
             continue
+        return to_naive_utc(parsed)
     return None
 
 

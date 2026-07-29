@@ -10,6 +10,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 """
 
 from pydantic import BaseModel
+from src.lib.tracing.profiler import profile_stage
 from src.utils.nlp.spacy import MODEL_NAMES, _spacy_manager
 from src.utils.nlp.lang_detect import langid_detect
 
@@ -101,21 +102,25 @@ class MultiLangEntityExtractor:
         ignore_pos: list[str] | None = None,
     ) -> ExtractElementsResponse:
         if lang is None:
-            lang, _ = langid_detect(text)
+            with profile_stage("nlp.detect_language"):
+                lang, _ = langid_detect(text)
         if lang not in MODEL_NAMES:
             return {"tokens": [], "noun_chunks": []}
         try:
-            nlp = self.spacy_manager.get_model(lang)
+            with profile_stage("nlp.load_model", lang=lang):
+                nlp = self.spacy_manager.get_model(lang)
         except Exception:
             return {"tokens": [], "noun_chunks": []}
-        doc = nlp(text)
+        with profile_stage("nlp.parse", chars=len(text or "")):
+            doc = nlp(text)
         ignore_pos_set = (
             set(ignore_pos) if ignore_pos is not None else _DEFAULT_IGNORE_POS
         )
-        return ExtractElementsResponse(
-            tokens=self._process_doc(doc, ignore_pos_set)["tokens"],
-            noun_chunks=self._process_doc(doc, ignore_pos_set)["noun_chunks"],
-        )
+        with profile_stage("nlp.process_doc"):
+            tokens = self._process_doc(doc, ignore_pos_set)["tokens"]
+        with profile_stage("nlp.process_doc"):
+            noun_chunks = self._process_doc(doc, ignore_pos_set)["noun_chunks"]
+        return ExtractElementsResponse(tokens=tokens, noun_chunks=noun_chunks)
 
     def extract_elements_batch(
         self,
