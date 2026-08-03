@@ -60,6 +60,12 @@ def _log_token_usage(response) -> None:
             f"out={usage.get('output_tokens', 0)}"
             + (f" cached={cached}" if cached else "")
         )
+    try:
+        from src.core.saving.ingest_cost import record_usage_from_response
+
+        record_usage_from_response(response)
+    except Exception:
+        pass
 
 
 def _trace_metadata(agent, config) -> dict:
@@ -425,6 +431,16 @@ def _run_invoke_loop_impl(
                 _last_called_tool_name = tool_name
                 while True:
                     tool_loop_count += 1
+                    max_tool_turns = config.get("max_tool_turns")
+                    if max_tool_turns is not None and tool_loop_count > int(
+                        max_tool_turns
+                    ):
+                        if agent.debug:
+                            print(
+                                "[DEBUG (agent_base)]: max_tool_turns reached: ",
+                                max_tool_turns,
+                            )
+                        break
                     tracer.expensive_loop(
                         "agent.invoke_loop.tool_loop",
                         tool_loop_count,

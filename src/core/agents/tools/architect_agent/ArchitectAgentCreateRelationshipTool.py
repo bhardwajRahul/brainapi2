@@ -380,7 +380,9 @@ class ArchitectAgentCreateRelationshipTool(BaseTool):
         fixed_rels_sets = set()
         janitor_response = None
 
-        if self.mode == "granular":
+        if self.mode == "granular" and not getattr(
+            self.architect_agent, "defer_janitor", False
+        ):
             from src.core.agents.janitor_agent import JanitorAgent
 
             janitor_agent = getattr(self.architect_agent, "janitor_agent", None)

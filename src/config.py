@@ -41,6 +41,36 @@ def validate_pipeline_mode(mode: str | None) -> Literal["lightweight", "accurate
     return mode
 
 
+def validate_ingest_architect_mode(
+    mode: str | None,
+) -> Literal["tooler", "schema", "batch"]:
+    normalized = (mode or "batch").strip().lower()
+    aliases = {
+        "tooler": "tooler",
+        "current": "tooler",
+        "schema": "schema",
+        "batch": "batch",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            f"Invalid INGEST_ARCHITECT_MODE: {mode!r}. "
+            "Expected 'tooler', 'schema', or 'batch'."
+        )
+    return aliases[normalized]  # type: ignore[return-value]
+
+
+def validate_ingest_architect_prior_context(
+    mode: str | None,
+) -> Literal["auto", "scratchpad", "raw"]:
+    normalized = (mode or "auto").strip().lower()
+    if normalized in ("auto", "scratchpad", "raw"):
+        return normalized  # type: ignore[return-value]
+    raise ValueError(
+        f"Invalid INGEST_ARCHITECT_PRIOR_CONTEXT: {mode!r}. "
+        "Expected 'auto', 'scratchpad', or 'raw'."
+    )
+
+
 class AzureConfig:
     """
     Configuration class for the Azure configuration.
@@ -560,7 +590,48 @@ class Config:
         self.spacy = SpacyConfig()
 
         self.run_graph_consolidator = (
-            os.getenv("RUN_GRAPH_CONSOLIDATOR", "true") == "true"
+            os.getenv("RUN_GRAPH_CONSOLIDATOR", "false") == "true"
+        )
+        self.run_observations = os.getenv("RUN_OBSERVATIONS", "false") == "true"
+        self.janitor_batch_size = int(os.getenv("JANITOR_BATCH_SIZE", "20"))
+        self.ingest_janitor_max_llm_calls = int(
+            os.getenv("INGEST_JANITOR_MAX_LLM_CALLS", "2")
+        )
+        # Accurate-mode hotpath: default to cheap/fast. Set false to restore legacy
+        # Architect-full-text + per-create Janitor for A/B measurement.
+        self.ingest_architect_per_unit = (
+            os.getenv("INGEST_ARCHITECT_PER_UNIT", "true") == "true"
+        )
+        self.ingest_defer_janitor = (
+            os.getenv("INGEST_DEFER_JANITOR", "true") == "true"
+        )
+        self.ingest_architect_mode: Literal["tooler", "schema", "batch"] = (
+            validate_ingest_architect_mode(
+                os.getenv("INGEST_ARCHITECT_MODE", "batch")
+            )
+        )
+        self.ingest_architect_max_schema_calls = int(
+            os.getenv("INGEST_ARCHITECT_MAX_SCHEMA_CALLS", "3")
+        )
+        self.ingest_architect_escalate_max_turns = int(
+            os.getenv("INGEST_ARCHITECT_ESCALATE_MAX_TURNS", "3")
+        )
+        self.ingest_architect_escalate = (
+            os.getenv("INGEST_ARCHITECT_ESCALATE", "true") == "true"
+        )
+        self.ingest_architect_dense_entity_threshold = int(
+            os.getenv("INGEST_ARCHITECT_DENSE_ENTITY_THRESHOLD", "12")
+        )
+        self.ingest_architect_dense_max_chars = int(
+            os.getenv("INGEST_ARCHITECT_DENSE_MAX_CHARS", "1200")
+        )
+        self.ingest_architect_prior_context: Literal[
+            "auto", "scratchpad", "raw"
+        ] = validate_ingest_architect_prior_context(
+            os.getenv("INGEST_ARCHITECT_PRIOR_CONTEXT", "auto")
+        )
+        self.ingest_architect_scratchpad_token_cap = int(
+            os.getenv("INGEST_ARCHITECT_SCRATCHPAD_TOKEN_CAP", "500")
         )
         self.docparser_endpoint = os.getenv("DOCPARSER_ENDPOINT")
         self.docparser_token = os.getenv("DOCPARSER_TOKEN")

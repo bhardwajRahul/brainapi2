@@ -12,6 +12,7 @@ import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from src.core.saving.ingest_cost import submit_with_context
 from typing import Dict, List, Literal, Optional
 
 from langchain.tools import BaseTool
@@ -289,7 +290,7 @@ class ScoutAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_invoke_agent)
+                    future = submit_with_context(executor, _invoke_agent)
                     response = future.result(timeout=timeout)
                     return response
             except FutureTimeoutError:
@@ -476,7 +477,7 @@ class ScoutAgent:
         def _invoke_agent_with_retry():
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_invoke_agent)
+                    future = submit_with_context(executor, _invoke_agent)
                     response = future.result(timeout=timeout)
                     return response
             except FutureTimeoutError:

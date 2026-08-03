@@ -13,6 +13,7 @@ import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from src.core.saving.ingest_cost import submit_with_context
 from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 from langchain.tools import BaseTool
@@ -46,6 +47,8 @@ from src.constants.prompts.architect_agent import (
     ARCHITECT_AGENT_TOOLER_COARSE_SYSTEM_PROMPT,
     ARCHITECT_AGENT_TOOLER_CREATE_RELATIONSHIPS_PROMPT,
     ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT,
+    BATCH_ARCHITECT_EXTRACT_PROMPT,
+    BATCH_ARCHITECT_REPAIR_PROMPT,
     STRUCTURED_ARCHITECT_AGENT_CREATE_RELATIONSHIPS_PROMPT,
     STRUCTURED_ARCHITECT_AGENT_FIX_RELATIONSHIPS_PROMPT,
 )
@@ -122,6 +125,13 @@ def _to_architect_relationship(relationship) -> ArchitectAgentRelationship:
             if isinstance(data.get("tip"), dict)
             else getattr(data.get("tip"), "happened_at", None),
         )
+    # Entity endpoints must have string uuids for ArchitectAgentEntity.
+    for end_key in ("tail", "tip"):
+        end = data.get(end_key)
+        if isinstance(end, dict) and not end.get("uuid"):
+            end = dict(end)
+            end["uuid"] = str(uuid.uuid4())
+            data[end_key] = end
     if not data.get("uuid"):
         tail = data.get("tail") or {}
         tip = data.get("tip") or {}
@@ -304,6 +314,7 @@ class ArchitectAgent:
         self.session_id: Optional[str] = None
         self.janitor_agent = None
         self._janitor_agent_brain_id = None
+        self.defer_janitor = True
         # self.database_desc = database_desc
 
     def take_pending_relationships(self) -> List[ArchitectAgentRelationship]:
@@ -322,6 +333,184 @@ class ArchitectAgent:
             return
         self.pending_persistence_batches.append(list(relationships))
         self.relationships_set.extend(relationships)
+
+    def run_batched_janitor(
+        self,
+        *,
+        text: str,
+        brain_id: str = "default",
+        targeting: Optional[Node] = None,
+        batch_size: int = 20,
+        cost_ledger=None,
+    ) -> None:
+        """
+        Run Janitor once per batch over pending relationships (post-Architect),
+        with cheap grounding triage so LLM Janitor stays exception-only.
+        """
+        from src.core.agents.janitor_agent import JanitorAgent
+        from src.core.saving.grounding import triage_relationships_for_janitor
+        from src.services.input.agents import (
+            embeddings_adapter,
+            graph_adapter,
+            llm_small_adapter,
+            vector_store_adapter,
+        )
+
+        pending = []
+        for batch in self.pending_persistence_batches:
+            pending.extend(batch)
+        if not pending:
+            pending = list(self.relationships_set)
+        if not pending:
+            return
+
+        triage = triage_relationships_for_janitor(pending, text)
+        if cost_ledger is not None:
+            cost_ledger.janitor_skipped += len(triage.accept)
+            cost_ledger.janitor_rejected += len(triage.reject)
+            cost_ledger.janitor_ran += 0
+            for decision in triage.reject:
+                cost_ledger.janitor_drop_reasons.append(decision.reason)
+
+        if triage.reject:
+            print(
+                "[DEBUG (run_batched_janitor)]: deterministic rejects "
+                f"count={len(triage.reject)} "
+                f"reasons={[d.reason for d in triage.reject]}"
+            )
+
+        cleaned: List[ArchitectAgentRelationship] = list(triage.accept)
+        need = list(triage.ambiguous)
+        if cost_ledger is not None:
+            cost_ledger.janitor_ambiguous += len(need)
+        if not need:
+            self.pending_persistence_batches = [cleaned] if cleaned else []
+            self.relationships_set = list(cleaned)
+            return
+
+        janitor_agent = self.janitor_agent
+        if janitor_agent is None or self._janitor_agent_brain_id != brain_id:
+            janitor_agent = JanitorAgent(
+                llm_small_adapter,
+                kg=graph_adapter,
+                vector_store=vector_store_adapter,
+                embeddings=embeddings_adapter,
+                database_desc=graph_adapter.graphdb_description,
+            )
+            self.janitor_agent = janitor_agent
+            self._janitor_agent_brain_id = brain_id
+
+        size = max(1, int(batch_size or 20))
+        max_llm_calls = max(0, int(getattr(config, "ingest_janitor_max_llm_calls", 2)))
+        llm_calls = 0
+        for i in range(0, len(need), size):
+            if llm_calls >= max_llm_calls:
+                remaining = len(need) - i
+                print(
+                    "[DEBUG (run_batched_janitor)]: janitor LLM budget exhausted "
+                    f"max_calls={max_llm_calls}; dropping remaining ambiguous={remaining}"
+                )
+                if cost_ledger is not None:
+                    cost_ledger.janitor_drop_reasons.append(
+                        f"janitor_budget_exhausted:{remaining}"
+                    )
+                break
+            batch = need[i : i + size]
+            input_rels = [
+                _ArchitectAgentRelationship(
+                    tip=rel.tip,
+                    tail=rel.tail,
+                    name=rel.name,
+                    description=rel.description,
+                    properties=getattr(rel, "properties", {}) or {},
+                    **(
+                        {"amount": rel.amount}
+                        if getattr(rel, "amount", None)
+                        else {}
+                    ),
+                )
+                for rel in batch
+            ]
+            response = janitor_agent.run_atomic_janitor(
+                input_relationships=input_rels,
+                text=text,
+                targeting=targeting,
+                brain_id=brain_id,
+                timeout=300,
+                max_retries=3,
+            )
+            llm_calls += 1
+            if cost_ledger is not None:
+                cost_ledger.janitor_ran += 1
+
+            # Parse / provider failure must not silently approve edges.
+            if response is None:
+                print(
+                    "[DEBUG (run_batched_janitor)]: janitor parse/provider failure; "
+                    f"dropping ambiguous batch size={len(batch)}"
+                )
+                if cost_ledger is not None:
+                    cost_ledger.janitor_drop_reasons.append("janitor_parse_failure")
+                continue
+
+            if response == "OK":
+                cleaned.extend(batch)
+                continue
+
+            status = getattr(response, "status", None)
+            if status == "REJECT":
+                veto = getattr(response, "veto_reasons", None) or []
+                print(
+                    "[DEBUG (run_batched_janitor)]: janitor veto "
+                    f"count={len(batch)} reasons={veto}"
+                )
+                if cost_ledger is not None:
+                    cost_ledger.janitor_drop_reasons.extend(
+                        list(veto) or ["janitor_veto"]
+                    )
+                continue
+
+            fixed = getattr(response, "fixed_relationships", None) or []
+            wrong = getattr(response, "wrong_relationships", None) or []
+            wrong_keys = set()
+            for w in wrong:
+                target = getattr(w, "relationship", None) or w
+                wrong_keys.add(
+                    (
+                        getattr(getattr(target, "tail", None), "uuid", None),
+                        getattr(getattr(target, "tip", None), "uuid", None),
+                        getattr(target, "name", None),
+                    )
+                )
+            if cost_ledger is not None and wrong:
+                for w in wrong:
+                    cost_ledger.janitor_drop_reasons.append(
+                        getattr(w, "reason", None) or "janitor_wrong"
+                    )
+            for rel in batch:
+                key = (rel.tail.uuid, rel.tip.uuid, rel.name)
+                if key in wrong_keys:
+                    continue
+                cleaned.append(rel)
+            for rel in fixed:
+                cleaned.append(
+                    ArchitectAgentRelationship(
+                        flow_key=str(uuid.uuid4()),
+                        tip=rel.tip,
+                        tail=rel.tail,
+                        name=rel.name,
+                        description=rel.description,
+                        properties=getattr(rel, "properties", {}) or {},
+                        **(
+                            {"amount": getattr(rel, "amount", None)}
+                            if getattr(rel, "amount", None)
+                            else {}
+                        ),
+                    )
+                )
+
+        self.pending_persistence_batches = [cleaned] if cleaned else []
+        self.relationships_set = list(cleaned)
 
     def _get_tools(
         self,
@@ -654,7 +843,7 @@ class ArchitectAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
+                    future = submit_with_context(executor, 
                         _invoke_agent,
                         unconnected_entities_list,
                         all_relationships,
@@ -1170,7 +1359,7 @@ class ArchitectAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
+                    future = submit_with_context(executor, 
                         _invoke_agent,
                         unconnected_entities_list,
                         all_relationships,
@@ -1316,6 +1505,256 @@ class ArchitectAgent:
             relationships=relationships_to_persist,
         )
 
+    def run_batch_extract(
+        self,
+        text: str,
+        entities: List[ScoutEntity],
+        targeting: Optional[Node] = None,
+        brain_id: str = "default",
+        timeout: int = 120,
+        max_retries: int = 2,
+        ingestion_session_id: Optional[str] = None,
+        mode: Literal["granular", "coarse"] = "granular",
+        reset: bool = True,
+        cost_ledger=None,
+        escalate: bool = True,
+    ) -> List[ArchitectAgentRelationship]:
+        """
+        Pure tools=[] schema extract: one primary call, at most one repair, then
+        optional escalate to run_tooler. No graph side effects before validation.
+        """
+        from src.core.agents.core.parsing import parse_structured_from_messages
+        from src.core.saving.architect_batch import (
+            BatchExtractResponse,
+            event_leg_incomplete,
+            validate_batch_extract,
+        )
+
+        if reset or not self.session_id:
+            self.session_id = str(uuid.uuid4())
+            self.relationships_set.clear()
+            self.pending_persistence_batches.clear()
+
+        entities_dict = {entity.uuid: entity for entity in entities}
+        self.entities = {
+            uuid_: strip_properties([entity.model_dump(mode="json")])[0]
+            for uuid_, entity in entities_dict.items()
+        }
+
+        self._get_agent(
+            output_schema=BatchExtractResponse,
+            brain_id=brain_id,
+            targeting=targeting,
+            type_="single",
+            mode=mode,
+        )
+
+        entity_payload = [
+            strip_properties([entity.model_dump(mode="json")])[0]
+            for entity in entities
+        ]
+        targeting_block = (
+            f"""
+The information is related to the following node; connect relationships to it
+when relevant:
+Name: {targeting.name}
+UUID: {targeting.uuid}
+Type: {targeting.labels}
+Description: {targeting.description}
+{targeting.properties}
+"""
+            if targeting
+            else ""
+        )
+
+        schema_calls = 0
+        repair_calls = 0
+        max_schema_calls = max(1, int(config.ingest_architect_max_schema_calls))
+
+        def _invoke(prompt: str) -> BatchExtractResponse:
+            nonlocal schema_calls
+            messages_list = [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+            metadata = {
+                "agent": "architect_agent",
+                "brain_id": brain_id,
+                "loop_origin": "architect_batch",
+            }
+            if ingestion_session_id:
+                metadata["ingestion_session_id"] = ingestion_session_id
+
+            def _call():
+                return self.agent.invoke(
+                    {"messages": messages_list},
+                    config={
+                        "tags": ["architect_agent", "architect_batch"],
+                        "metadata": metadata,
+                    },
+                )
+
+            @retry(
+                stop=stop_after_attempt(max_retries),
+                wait=wait_exponential(multiplier=1, min=1, max=10),
+                retry=retry_if_exception_type(TimeoutError),
+                reraise=True,
+            )
+            def _with_timeout():
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = submit_with_context(executor, _call)
+                        return future.result(timeout=timeout)
+                except FutureTimeoutError:
+                    raise TimeoutError(
+                        f"Architect batch extract timed out after {timeout}s"
+                    )
+
+            response = _with_timeout()
+            schema_calls += 1
+            structured = response.get("structured_response")
+            if isinstance(structured, dict):
+                try:
+                    structured = BatchExtractResponse.model_validate(structured)
+                except Exception:
+                    structured = None
+            if structured is None:
+                fallback = parse_structured_from_messages(
+                    response.get("messages", []), BatchExtractResponse
+                )
+                structured = fallback
+            if structured is None:
+                structured = BatchExtractResponse(relationships=[], new_nodes=[])
+            return structured
+
+        primary_prompt = prompt_registry.get(
+            "BATCH_ARCHITECT_EXTRACT_PROMPT",
+            BATCH_ARCHITECT_EXTRACT_PROMPT,
+        ).format(
+            text=text,
+            entities=entity_payload,
+            targeting=targeting_block,
+        )
+        extracted = _invoke(primary_prompt)
+        validation = validate_batch_extract(
+            extracted, source_text=text, scout_entities=entities
+        )
+        primary_validation = validation
+
+        if validation.rejected and schema_calls < max_schema_calls:
+            repair_prompt = prompt_registry.get(
+                "BATCH_ARCHITECT_REPAIR_PROMPT",
+                BATCH_ARCHITECT_REPAIR_PROMPT,
+            ).format(
+                errors="\n".join(validation.reasons),
+                text=text,
+                entities=entity_payload,
+            )
+            extracted = _invoke(repair_prompt)
+            repair_calls += 1
+            repaired_validation = validate_batch_extract(
+                extracted, source_text=text, scout_entities=entities
+            )
+            # Keep the more usable extract; do not discard a good primary
+            # when repair returns fewer accepted edges.
+            if len(repaired_validation.accepted) > len(primary_validation.accepted):
+                validation = repaired_validation
+            elif (
+                len(repaired_validation.accepted) == len(primary_validation.accepted)
+                and len(repaired_validation.rejected) < len(primary_validation.rejected)
+            ):
+                validation = repaired_validation
+            else:
+                validation = primary_validation
+
+        escalate_reason = None
+        if not validation.usable and entities:
+            escalate_reason = "schema_empty_or_all_rejected"
+        elif validation.rejected:
+            # Partial but usable: keep accepted edges, drop rejects with audit.
+            # Do not tooler-escalate — that was discarding happy-path extracts.
+            print(
+                "[DEBUG (run_batch_extract)]: dropping rejected items "
+                f"count={len(validation.rejected)} reasons={validation.reasons}"
+            )
+        if (
+            validation.usable
+            and event_leg_incomplete(validation.accepted, entities)
+        ):
+            print(
+                "[DEBUG (run_batch_extract)]: event_leg_incomplete after "
+                "schema extract; persisting accepted without escalate"
+            )
+
+        accepted_rels: List[ArchitectAgentRelationship] = []
+        if validation.accepted:
+            for rel in validation.accepted:
+                props = dict(rel.properties or {})
+                if rel.source_span and not props.get("source_span"):
+                    props["source_span"] = rel.source_span
+                if rel.span_start is not None:
+                    props["span_start"] = rel.span_start
+                if rel.span_end is not None:
+                    props["span_end"] = rel.span_end
+                if rel.happened_at and not props.get("happened_at"):
+                    props["happened_at"] = rel.happened_at
+                accepted_rels.append(
+                    _to_architect_relationship(
+                        {
+                            "tail": rel.tail.model_dump(mode="json"),
+                            "tip": rel.tip.model_dump(mode="json"),
+                            "name": rel.name,
+                            "description": rel.description,
+                            "amount": rel.amount,
+                            "properties": props,
+                        }
+                    )
+                )
+            if accepted_rels and escalate_reason is None:
+                self.queue_relationships_for_persistence(accepted_rels)
+
+        should_escalate = bool(escalate and escalate_reason)
+        if cost_ledger is not None:
+            cost_ledger.record_architect_unit(
+                escalated=should_escalate,
+                reason=escalate_reason,
+                schema_calls=schema_calls,
+                repair_calls=repair_calls,
+            )
+
+        if should_escalate:
+            max_turns = max(0, int(config.ingest_architect_escalate_max_turns))
+            if max_turns <= 0:
+                print(
+                    "[DEBUG (run_batch_extract)]: escalate suppressed "
+                    f"reason={escalate_reason} (max_turns=0); partial/empty unit"
+                )
+                if cost_ledger is not None:
+                    cost_ledger.janitor_drop_reasons.append(
+                        "escalate_budget_exhausted"
+                    )
+                return accepted_rels
+            print(
+                f"[DEBUG (run_batch_extract)]: escalating unit reason={escalate_reason} "
+                f"max_turns={max_turns}"
+            )
+            return self.run_tooler(
+                text,
+                entities,
+                targeting=targeting,
+                brain_id=brain_id,
+                timeout=timeout,
+                max_retries=max_retries,
+                ingestion_session_id=ingestion_session_id,
+                mode=mode,
+                reset=False,
+                max_tool_turns=max_turns,
+            )
+
+        return list(self.relationships_set) if self.relationships_set else accepted_rels
+
     def run_tooler(
         self,
         text: str,
@@ -1326,6 +1765,8 @@ class ArchitectAgent:
         max_retries: int = 3,
         ingestion_session_id: Optional[str] = None,
         mode: Literal["granular", "coarse"] = "granular",
+        reset: bool = True,
+        max_tool_turns: Optional[int] = None,
     ) -> List[ArchitectAgentRelationship]:
         """
         Drive the architect agent in "tooler" mode to iteratively discover relationships using available tools and collect the results.
@@ -1339,6 +1780,8 @@ class ArchitectAgent:
             brain_id (str): Identifier for the knowledge brain/context to use.
             timeout (int): Maximum seconds to wait for a single agent invocation before raising a timeout.
             max_retries (int): Maximum number of retry attempts for timed or retried invocations.
+            reset (bool): When True, clear prior session relationships before running.
+            max_tool_turns (Optional[int]): Hard cap on custom-backend tool loop turns (escalate budget).
 
         Returns:
             List[ArchitectAgentRelationship]: The relationships discovered and collected by the agent during this run.
@@ -1350,15 +1793,21 @@ class ArchitectAgent:
 
         from src.lib.redis.client import _redis_client
 
-        self.session_id = str(uuid.uuid4())
-        self.relationships_set.clear()
-        self.pending_persistence_batches.clear()
+        if reset or not self.session_id:
+            self.session_id = str(uuid.uuid4())
+            self.relationships_set.clear()
+            self.pending_persistence_batches.clear()
 
         entities_dict = {
             entity.uuid: strip_properties([entity.model_dump(mode="json")])[0]
             for entity in entities
         }
-        self.entities = entities_dict
+        if reset:
+            self.entities = entities_dict
+        else:
+            existing = getattr(self, "entities", None) or {}
+            existing.update(entities_dict)
+            self.entities = existing
 
         self._get_agent(
             type_="tooler",
@@ -1437,13 +1886,16 @@ class ArchitectAgent:
             }
             if ingestion_session_id:
                 metadata["ingestion_session_id"] = ingestion_session_id
+            invoke_config = {
+                "recursion_limit": MAX_RECURSION_LIMIT,
+                "tags": ["architect_agent", "architect_tooler"],
+                "metadata": metadata,
+            }
+            if max_tool_turns is not None:
+                invoke_config["max_tool_turns"] = int(max_tool_turns)
             return self.agent.invoke(
                 {"messages": messages_list},
-                config={
-                    "recursion_limit": MAX_RECURSION_LIMIT,
-                    "tags": ["architect_agent", "architect_tooler"],
-                    "metadata": metadata,
-                },
+                config=invoke_config,
             )
 
         @retry(
@@ -1467,7 +1919,7 @@ class ArchitectAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_invoke_agent, previous_messages)
+                    future = submit_with_context(executor, _invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
                     return response
             except FutureTimeoutError:

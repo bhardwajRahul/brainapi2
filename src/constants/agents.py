@@ -115,11 +115,13 @@ class AtomicJanitorAgentWrongRelationship(BaseModel):
 
 
 class AtomicJanitorAgentInputOutput(BaseModel):
-    status: Literal["OK", "ERROR"] = Field(default="ERROR")
+    status: Literal["OK", "ERROR", "REJECT"] = Field(default="ERROR")
 
     fixed_relationships: Optional[List[_ArchitectAgentRelationship]] = None
     wrong_relationships: Optional[List[AtomicJanitorAgentWrongRelationship]] = None
     required_new_nodes: Optional[List[ArchitectAgentNew]] = None
+    # Explicit veto notes when status == REJECT (audit); edges are not approved.
+    veto_reasons: Optional[List[str]] = None
 
 
 class GraphConsolidatorOutput(BaseModel):

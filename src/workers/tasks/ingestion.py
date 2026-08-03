@@ -106,7 +106,10 @@ def set_ingestion_task_status(
     error: Optional[str] = None,
     errors: Optional[list] = None,
     counts: Optional[dict] = None,
+    cost: Optional[dict] = None,
 ) -> dict:
+    from src.core.saving.ingest_cost import IngestCostLedger, merge_cost_into_status_payload
+
     key = f"task:{task_id}"
     existing_raw = cache_adapter.get(key, brain_id=brain_id)
     existing: dict = {}
@@ -145,6 +148,10 @@ def set_ingestion_task_status(
             }
             for item in errors[:50]
         ]
+    if cost is not None:
+        payload = merge_cost_into_status_payload(
+            payload, IngestCostLedger.from_dict(cost)
+        )
     cache_adapter.set(
         key=key,
         value=json.dumps(payload),
@@ -268,7 +275,7 @@ def _resolve_relationship_entities(
         except Exception:
             return None
         entity_type = (entity.type or "").strip().lower()
-        best = None
+        ranked = []
         for candidate in candidates:
             metadata = candidate.metadata or {}
             candidate_uuid = metadata.get("uuid")
@@ -285,14 +292,40 @@ def _resolve_relationship_entities(
             similarity = cosine_similarity(embedding, candidate_vectors[0].embeddings)
             if similarity < NODE_RESOLUTION_SIMILARITY:
                 continue
-            if best is not None and similarity < best[0]:
-                continue
-            if best is not None and abs(similarity - best[0]) < 0.02:
-                return None
             node = graph_adapter.get_by_uuid(candidate_uuid, brain_id=brain_id)
             if node:
-                best = (similarity, node)
-        return best[1] if best else None
+                ranked.append((similarity, node))
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        if len(ranked) >= 2 and abs(ranked[0][0] - ranked[1][0]) < 0.02:
+            pool_nodes = [node for _, node in ranked[:5]]
+            try:
+                from src.core.agents.kg_agent import KGAgent
+
+                kg_agent = KGAgent(
+                    llm_adapter=llm_small_adapter,
+                    cache_adapter=cache_adapter,
+                    kg=graph_adapter,
+                    vector_store=vector_store_adapter,
+                    embeddings=embeddings_adapter,
+                    database_desc=graph_adapter.graphdb_description,
+                )
+                adjudication = kg_agent.verify_entity_existence(
+                    entity_name=entity.name,
+                    entity_types=[entity.type] if entity.type else [],
+                    entity_meta_description=getattr(entity, "description", None),
+                    pool_nodes=pool_nodes,
+                    brain_id=brain_id,
+                )
+                if getattr(adjudication, "exists", False) and getattr(
+                    adjudication, "node", None
+                ):
+                    return adjudication.node
+            except Exception as exc:
+                print(f"[!] Entity adjudication failed for {entity.name}: {exc}")
+            return None
+        return ranked[0][1]
 
     resolutions: dict = {}
     for key, entity in unique_entities.items():
@@ -617,12 +650,24 @@ def ingest_data(self, args: dict):
         if config.pipeline_mode == "lightweight":
             print("[DEBUG (ingest_data)]: Lightweight pipeline mode selected")
 
-        if config.pipeline_mode == "accurate":
-            observations = observations_agent.observe(
-                text=source_text,
-                observate_for=payload.observate_for,
-                context=None,
-            )
+        from src.core.saving.ingest_cost import IngestCostLedger, estimate_tokens, track_stage
+
+        cost_ledger = IngestCostLedger()
+        with track_stage(cost_ledger, "embed"):
+            cost_ledger.embed.add_usage(calls=1)
+
+        if config.pipeline_mode == "accurate" and config.run_observations:
+            with track_stage(cost_ledger, "observations"):
+                observations = observations_agent.observe(
+                    text=source_text,
+                    observate_for=payload.observate_for,
+                    context=None,
+                )
+                cost_ledger.observations.add_usage(
+                    input_tokens=estimate_tokens(source_text),
+                    output_tokens=estimate_tokens("\n".join(observations or [])),
+                    calls=1,
+                )
 
             data_adapter.save_observations(
                 [
@@ -643,7 +688,17 @@ def ingest_data(self, args: dict):
             source_timestamp=payload.source_timestamp,
             preferred_extraction_entities=payload.preferred_extraction_entities,
         )
+        cost_ledger.merge(
+            IngestCostLedger.from_dict(getattr(enrich_result, "cost", None))
+        )
         parent_task_id = self.request.id
+        set_ingestion_task_status(
+            parent_task_id,
+            payload.brain_id,
+            "started",
+            stage="enriched",
+            cost=cost_ledger.to_dict(),
+        )
         steps = []
         if enrich_result.enrichment_relationships:
             set_ingestion_task_status(
@@ -654,6 +709,7 @@ def ingest_data(self, args: dict):
                 counts={
                     "relationships": len(enrich_result.enrichment_relationships),
                 },
+                cost=cost_ledger.to_dict(),
             )
             steps.append(
                 process_architect_relationships.si(
@@ -671,6 +727,7 @@ def ingest_data(self, args: dict):
                 payload.brain_id,
                 "consolidating",
                 stage="consolidating",
+                cost=cost_ledger.to_dict(),
             )
             steps.append(
                 consolidate_graph_async.si(
@@ -685,6 +742,10 @@ def ingest_data(self, args: dict):
                 parent_task_id,
                 payload.brain_id,
                 "completed",
+                None,
+                None,
+                None,
+                cost_ledger.to_dict(),
             )
         )
         from celery import chain
@@ -713,7 +774,12 @@ def finalize_ingestion_task(
     error: Optional[str] = None,
     errors: Optional[list] = None,
     counts: Optional[dict] = None,
+    cost: Optional[dict] = None,
 ):
+    try:
+        graph_adapter.rebuild_topic_index(brain_id)
+    except Exception as e:
+        print(f"[!] Topic index rebuild failed: {e}")
     set_ingestion_task_status(
         parent_task_id,
         brain_id,
@@ -722,6 +788,7 @@ def finalize_ingestion_task(
         error=error,
         errors=errors,
         counts=counts,
+        cost=cost,
     )
     return parent_task_id
 
@@ -1036,13 +1103,36 @@ def process_architect_relationships(self, args: dict):
             )
 
         try:
-            graph_adapter.rebuild_hub_bridge_index(brain_id)
+            import time as _time
+
+            touched_entities: set[str] = set()
+            for relationship in relationships:
+                for endpoint in (relationship.tail, relationship.tip):
+                    typ = (getattr(endpoint, "type", None) or "").strip().upper()
+                    if typ and typ != "EVENT" and getattr(endpoint, "uuid", None):
+                        touched_entities.add(str(endpoint.uuid))
+            started = _time.perf_counter()
+            if touched_entities:
+                graph_adapter.refresh_hub_bridges_for_entities(
+                    list(touched_entities), brain_id=brain_id
+                )
+            else:
+                graph_adapter.rebuild_hub_bridge_index(brain_id)
+            index_ms = (_time.perf_counter() - started) * 1000.0
+            if parent_task_id:
+                from src.core.saving.ingest_cost import IngestCostLedger
+
+                ledger = IngestCostLedger()
+                ledger.index_rebuild.add_usage(latency_ms=index_ms, calls=1)
+                set_ingestion_task_status(
+                    parent_task_id,
+                    brain_id,
+                    "persisting",
+                    stage="indexing",
+                    cost=ledger.to_dict(),
+                )
         except Exception as e:
             print(f"[!] Hub bridge index rebuild failed: {e}")
-        try:
-            graph_adapter.rebuild_topic_index(brain_id)
-        except Exception as e:
-            print(f"[!] Topic index rebuild failed: {e}")
 
         if session_id:
             from src.lib.redis.client import _redis_client

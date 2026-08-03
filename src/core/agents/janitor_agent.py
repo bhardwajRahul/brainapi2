@@ -16,6 +16,7 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import BaseTool
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from src.core.saving.ingest_cost import submit_with_context
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -356,7 +357,7 @@ class JanitorAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_invoke_agent, previous_messages)
+                    future = submit_with_context(executor, _invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
                     return response
             except FutureTimeoutError:
@@ -507,7 +508,7 @@ class JanitorAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_invoke_agent, previous_messages)
+                    future = submit_with_context(executor, _invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
                     return response
             except FutureTimeoutError:
@@ -674,7 +675,7 @@ class JanitorAgent:
             """
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_invoke_agent, previous_messages)
+                    future = submit_with_context(executor, _invoke_agent, previous_messages)
                     response = future.result(timeout=timeout)
                     return response
             except FutureTimeoutError:

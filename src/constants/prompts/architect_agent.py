@@ -213,6 +213,55 @@ STRICT RULES:
 Begin!
 """
 
+BATCH_ARCHITECT_EXTRACT_PROMPT = """
+Role: Graph Structural Architect (batch extract).
+Task: Emit ALL event-hub relationships for this unit in ONE JSON response. No tools.
+
+{targeting}
+
+Source Text:
+{text}
+
+Entities Found by Scout (reuse these UUIDs):
+{entities}
+
+STRICT RULES:
+- Prefer Scout entity UUIDs. Only add new_nodes when an EVENT hub is clearly missing from Scout.
+- Never invent type-named placeholders (name must not equal type, e.g. no name="PERSON" type="PERSON").
+- Open-vocabulary predicates are allowed (do not restrict to a closed ontology).
+- Every relationship MUST include source_span: an exact contiguous quote from the Source Text that supports the edge.
+- Optional span_start/span_end are 0-based character offsets into Source Text for that quote; if unsure, omit offsets rather than guessing.
+- Every EVENT endpoint (tail or tip with type EVENT, and every new EVENT node) MUST include a non-empty description: one short sentence grounded in the Source Text (reuse Scout description when present).
+- For EVENT hubs include actor and object/content legs when the text supports them.
+- Include amount and happened_at when stated in the text.
+- "tail" is source/origin; "tip" is destination/target. Never invert them.
+- Do not emit bookkeeping commentary — only the structured response.
+
+Begin!
+"""
+
+BATCH_ARCHITECT_REPAIR_PROMPT = """
+Your previous batch extract had validation errors. Repair ONLY the invalid items.
+Keep valid relationships unchanged conceptually; re-emit a complete corrected batch.
+
+Validation errors:
+{errors}
+
+Source Text:
+{text}
+
+Entities Found by Scout (reuse these UUIDs):
+{entities}
+
+STRICT RULES:
+- Fix missing/ungrounded source_span, mismatched span offsets (prefer correct offsets or omit them), type-named placeholders, unknown endpoints, malformed endpoints, and missing_event_description.
+- Every EVENT endpoint/new EVENT node needs a non-empty grounded description (reuse Scout description when present).
+- Prefer Scout UUIDs. No type==name placeholders.
+- Re-emit the full relationships list for this unit after repairs.
+
+Begin!
+"""
+
 ARCHITECT_AGENT_TOOLER_SYSTEM_PROMPT_UNCOMPRESSED = """
 You are a "Structural Graph Architect." Your goal is to map information into an Active Vector Graph.
 
