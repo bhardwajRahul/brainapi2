@@ -212,7 +212,7 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 
 | Endpoint                     | Method | What you get                                                                                                     |
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — the matching graph triples plus historical context                |
+| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — graph triples, passages, historical context, and optional provenance |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
 | `/retrieve/entity/synergies` | `GET`  | **Similar things** related to a given one — effectively a recommendation algorithm over the graph                |
 
@@ -223,7 +223,8 @@ curl -X POST http://localhost:8000/retrieve/context \
   -H "Authorization: Bearer $BRAINPAT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "Who organized AI events in London in March 2024?", "brain_id": "default"}'
-# → text_context + triples (the graph path) + historical_context
+# → text_context + triples + historical_context + source_passages
+#    (optional: graph_session_ids, topics, paths; tune with max_facts / max_passages)
 ```
 
 **Check if an entity exists:**
@@ -242,7 +243,7 @@ curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%2
 # → similar entities ranked by how strongly they connect to the target
 ```
 
-These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [REST API Reference](https://brainapi.lumen-labs.ai/docs/rest).
+These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Start with [Context retrieval](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) and the [docs hub](https://brainapi.lumen-labs.ai/docs/v2).
 
 ---
 
@@ -335,7 +336,7 @@ print(result.text_context)   # the answer
 print(result.triples)        # the graph path used to derive it
 ```
 
-> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/rest) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
+> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/v2) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
 
 ---
 
@@ -355,9 +356,9 @@ print(result.triples)        # the graph path used to derive it
 | ---------------------- | ------------------------------------------------------------------------------------------------ |
 | 🖥️ Local CLI (TUI)     | [`tui/README.md`](tui/README.md) — `npm install -g brainapi-tui`                                 |
 | 📖 Documentation       | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
-| ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/quickstart](https://brainapi.lumen-labs.ai/docs/quickstart)         |
+| ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
 | 🔌 Plugin Registry     | [registry.brain-api.dev/app](https://registry.brain-api.dev/app)                                 |
-| 🛠️ REST API Reference  | [brainapi.lumen-labs.ai/docs/rest](https://brainapi.lumen-labs.ai/docs/rest)                     |
+| 🛠️ Context API         | [brainapi.lumen-labs.ai/docs/v2/retrieval/context](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) |
 | 🐍 Python SDK (PyPI)   | [pypi.org/project/lumen_brain](https://pypi.org/project/lumen_brain/)                            |
 | 📦 Node.js SDK (npm)   | [npmjs.com/package/@lumenlabs/lumen-brain](https://www.npmjs.com/package/@lumenlabs/lumen-brain) |
 | 💬 Community & Support | [Discord](https://discord.gg/VTngQTaeDf)                                                         |
