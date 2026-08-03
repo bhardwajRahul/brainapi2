@@ -1,11 +1,182 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-07-29T18:51:58.401379+00:00",
+  "updated_at": "2026-08-03T09:15:33.804119+00:00",
   "description": "BrainAPI benchmark results. Top published scores across suites. Updated when a suite evaluate/report completes successfully.",
   "benchmarks": {
     "locomo": {
       "name": "LoCoMo",
       "leaderboard": [
+        {
+          "run_id": "locomo-compose-sota-conv26-v4d",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.9539473684210527,
+          "headline_judge_accuracy_pct": 95.39,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26-v4d/report.json",
+          "recorded_at": "2026-07-31T13:14:01.363020+00:00"
+        },
+        {
+          "run_id": "locomo-compose-sota-conv26-v4c",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.9276315789473685,
+          "headline_judge_accuracy_pct": 92.76,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26-v4c/report.json",
+          "recorded_at": "2026-07-31T13:07:26.775227+00:00"
+        },
+        {
+          "run_id": "locomo-compose-sota-conv26-v2",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.9210526315789473,
+          "headline_judge_accuracy_pct": 92.11,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26-v2/report.json",
+          "recorded_at": "2026-07-30T20:01:08.915975+00:00"
+        },
+        {
+          "run_id": "locomo-compose-sota-conv26-v4",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.9210526315789473,
+          "headline_judge_accuracy_pct": 92.11,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26-v4/report.json",
+          "recorded_at": "2026-07-31T11:28:19.452764+00:00"
+        },
+        {
+          "run_id": "locomo-compose-sota-conv26-v3",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.9013157894736842,
+          "headline_judge_accuracy_pct": 90.13,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26-v3/report.json",
+          "recorded_at": "2026-07-31T10:29:50.328215+00:00"
+        },
+        {
+          "run_id": "locomo-conv26-beamreg-product",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.9013157894736842,
+          "headline_judge_accuracy_pct": 90.13,
+          "answerable_rate": 0.9473684210526315,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-conv26-beamreg-product/report.json",
+          "recorded_at": "2026-08-01T01:58:34.693097+00:00"
+        },
+        {
+          "run_id": "locomo-compose-sota-conv26",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8947368421052632,
+          "headline_judge_accuracy_pct": 89.47,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26/report.json",
+          "recorded_at": "2026-07-30T19:18:56.740730+00:00"
+        },
+        {
+          "run_id": "locomo-compose-sota-conv26-v4b",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.875,
+          "headline_judge_accuracy_pct": 87.5,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-compose-sota-conv26-v4b/report.json",
+          "recorded_at": "2026-07-31T12:26:52.469668+00:00"
+        },
+        {
+          "run_id": "locomo-cat3fix-sota-conv26",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.868421052631579,
+          "headline_judge_accuracy_pct": 86.84,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-cat3fix-sota-conv26/report.json",
+          "recorded_at": "2026-07-30T18:26:15.214852+00:00"
+        },
         {
           "run_id": "oldbrain-recheck-a",
           "track": "product",
@@ -26,6 +197,25 @@
           "recorded_at": "2026-07-28T22:05:39.768798+00:00"
         },
         {
+          "run_id": "locomo-batch-nostorm-cfgb",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8552631578947368,
+          "headline_judge_accuracy_pct": 85.53,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-batch-nostorm-cfgb/report.json",
+          "recorded_at": "2026-07-30T17:03:35.449258+00:00"
+        },
+        {
           "run_id": "phase-sota-d1-conv26",
           "track": "sota",
           "scope": "conv-26",
@@ -43,6 +233,44 @@
           "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
           "report_path": "runs/phase-sota-d1-conv26/report.json",
           "recorded_at": "2026-07-29T18:51:58.400341+00:00"
+        },
+        {
+          "run_id": "locomo-nostorm-sota-conv26",
+          "track": "sota",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8486842105263158,
+          "headline_judge_accuracy_pct": 84.87,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomoconv26nostorm",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-nostorm-sota-conv26/report.json",
+          "recorded_at": "2026-07-30T17:41:32.563092+00:00"
+        },
+        {
+          "run_id": "locomo-batch-cfgb",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8421052631578947,
+          "headline_judge_accuracy_pct": 84.21,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26batch",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-batch-cfgb/report.json",
+          "recorded_at": "2026-07-30T15:23:27.730891+00:00"
         },
         {
           "run_id": "clean-brain-eval-a",
@@ -140,6 +368,34 @@
           "recorded_at": "2026-07-28T18:18:19.581660+00:00"
         },
         {
+          "run_id": "sota-locomo10-batch-compose",
+          "track": "sota",
+          "scope": "full-locomo10",
+          "samples": [
+            "conv-26",
+            "conv-30",
+            "conv-41",
+            "conv-42",
+            "conv-43",
+            "conv-44",
+            "conv-47",
+            "conv-48",
+            "conv-49",
+            "conv-50"
+          ],
+          "n_non_adversarial": 1540,
+          "headline_judge_accuracy": 0.8097402597402598,
+          "headline_judge_accuracy_pct": 80.97,
+          "answerable_rate": 0.9363636363636364,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "sota",
+          "brain": "locomof10c*",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/sota-locomo10-batch-compose/report.json",
+          "recorded_at": "2026-07-31T13:35:58.561407+00:00"
+        },
+        {
           "run_id": "phase-d1-paths-a",
           "track": "product",
           "scope": "conv-26",
@@ -157,6 +413,375 @@
           "git_sha": "649f5e569de8894c05eec5f1f423024be5e9b6a4",
           "report_path": "runs/phase-d1-paths-a/report.json",
           "recorded_at": "2026-07-29T16:26:21.919353+00:00"
+        },
+        {
+          "run_id": "locomo-batch-score",
+          "track": "product",
+          "scope": "conv-26",
+          "samples": [
+            "conv-26"
+          ],
+          "n_non_adversarial": 152,
+          "headline_judge_accuracy": 0.8026315789473685,
+          "headline_judge_accuracy_pct": 80.26,
+          "answerable_rate": 0.9407894736842105,
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "bench_profile": "product",
+          "brain": "locomoconv26batch",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/locomo-batch-score/report.json",
+          "recorded_at": "2026-07-30T14:59:39.743019+00:00"
+        }
+      ]
+    },
+    "longmemeval": {
+      "name": "LongMemEval",
+      "leaderboard": []
+    },
+    "beam": {
+      "name": "BEAM",
+      "leaderboard": [
+        {
+          "run_id": "beam-1m-1-product-v3c-compose",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "1M/1",
+          "size": "1M",
+          "samples": [
+            "1M/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.7897396010333467,
+          "headline_score_pct": 78.97,
+          "per_ability": {
+            "abstention": 0.5,
+            "contradiction_resolution": 0.6875,
+            "event_ordering": 0.42170156588902286,
+            "information_extraction": 1.0,
+            "instruction_following": 1.0,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.9375,
+            "preference_following": 0.875,
+            "summarization": 0.4756944444444444,
+            "temporal_reasoning": 1.0
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam1m1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-1m-1-product-v3c-compose/report.json",
+          "recorded_at": "2026-08-03T09:15:33.803818+00:00"
+        },
+        {
+          "run_id": "beam-100k-1-clean-ordv1",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.7887500000000001,
+          "headline_score_pct": 78.88,
+          "per_ability": {
+            "abstention": 1.0,
+            "contradiction_resolution": 0.625,
+            "event_ordering": 0.7875,
+            "information_extraction": 1.0,
+            "instruction_following": 0.75,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.625,
+            "preference_following": 1.0,
+            "summarization": 0.6000000000000001,
+            "temporal_reasoning": 0.5
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1-clean-ordv1/report.json",
+          "recorded_at": "2026-08-01T02:00:50.310070+00:00"
+        },
+        {
+          "run_id": "beam-100k-1-clean-product",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.7398223304703363,
+          "headline_score_pct": 73.98,
+          "per_ability": {
+            "abstention": 0.5,
+            "contradiction_resolution": 0.6875,
+            "event_ordering": 0.1357233047033631,
+            "information_extraction": 0.75,
+            "instruction_following": 1.0,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.875,
+            "preference_following": 1.0,
+            "summarization": 0.7,
+            "temporal_reasoning": 0.75
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1-clean-product/report.json",
+          "recorded_at": "2026-08-01T02:00:51.059632+00:00"
+        },
+        {
+          "run_id": "beam-1m-1-product-v2",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "1M/1",
+          "size": "1M",
+          "samples": [
+            "1M/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.7014047619826247,
+          "headline_score_pct": 70.14,
+          "per_ability": {
+            "abstention": 0.5,
+            "contradiction_resolution": 0.4375,
+            "event_ordering": 0.2883531753818027,
+            "information_extraction": 1.0,
+            "instruction_following": 1.0,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.625,
+            "preference_following": 0.75,
+            "summarization": 0.4131944444444444,
+            "temporal_reasoning": 1.0
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam1m1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-1m-1-product-v2/report.json",
+          "recorded_at": "2026-08-03T07:58:27.006989+00:00"
+        },
+        {
+          "run_id": "beam-1m-1-product-v3b",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "1M/1",
+          "size": "1M",
+          "samples": [
+            "1M/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.6497747205349994,
+          "headline_score_pct": 64.98,
+          "per_ability": {
+            "abstention": 0.5,
+            "contradiction_resolution": 0.5625,
+            "event_ordering": 0.4213583164611052,
+            "information_extraction": 1.0,
+            "instruction_following": 1.0,
+            "knowledge_update": 0.5,
+            "multi_session_reasoning": 0.75,
+            "preference_following": 0.875,
+            "summarization": 0.3888888888888889,
+            "temporal_reasoning": 0.5
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam1m1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-1m-1-product-v3b/report.json",
+          "recorded_at": "2026-08-03T09:14:47.079177+00:00"
+        },
+        {
+          "run_id": "beam-100k-1-sota",
+          "track": "sota",
+          "bench_profile": "sota",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.6483928571428572,
+          "headline_score_pct": 64.84,
+          "per_ability": {
+            "abstention": 0.0,
+            "contradiction_resolution": 0.625,
+            "event_ordering": 0.1339285714285714,
+            "information_extraction": 0.75,
+            "instruction_following": 0.75,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.875,
+            "preference_following": 1.0,
+            "summarization": 0.6,
+            "temporal_reasoning": 0.75
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1-sota/report.json",
+          "recorded_at": "2026-08-01T02:01:11.568901+00:00"
+        },
+        {
+          "run_id": "beam-100k-1-clean-sota",
+          "track": "sota",
+          "bench_profile": "sota",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.6245833333333334,
+          "headline_score_pct": 62.46,
+          "per_ability": {
+            "abstention": 0.0,
+            "contradiction_resolution": 0.875,
+            "event_ordering": 0.1458333333333333,
+            "information_extraction": 0.5,
+            "instruction_following": 0.75,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.625,
+            "preference_following": 1.0,
+            "summarization": 0.6000000000000001,
+            "temporal_reasoning": 0.75
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1-clean-sota/report.json",
+          "recorded_at": "2026-08-01T02:01:12.316230+00:00"
+        },
+        {
+          "run_id": "beam-100k-1-product-prompts",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.6042261904761904,
+          "headline_score_pct": 60.42,
+          "per_ability": {
+            "abstention": 0.0,
+            "contradiction_resolution": 0.5,
+            "event_ordering": 0.1339285714285714,
+            "information_extraction": 0.9583333333333333,
+            "instruction_following": 0.75,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.75,
+            "preference_following": 0.75,
+            "summarization": 0.7,
+            "temporal_reasoning": 0.5
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1-product-prompts/report.json",
+          "recorded_at": "2026-08-01T02:01:13.074254+00:00"
+        },
+        {
+          "run_id": "beam-100k-1-configb",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.559333376188726,
+          "headline_score_pct": 55.93,
+          "per_ability": {
+            "abstention": 0.25,
+            "contradiction_resolution": 0.5,
+            "event_ordering": 0.14333376188726035,
+            "information_extraction": 0.5,
+            "instruction_following": 0.75,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.625,
+            "preference_following": 0.75,
+            "summarization": 0.7,
+            "temporal_reasoning": 0.375
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1-configb/report.json",
+          "recorded_at": "2026-08-01T02:01:13.832770+00:00"
+        },
+        {
+          "run_id": "beam-100k-1",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "100K/1",
+          "size": "100K",
+          "samples": [
+            "100K/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.5558928571428572,
+          "headline_score_pct": 55.59,
+          "per_ability": {
+            "abstention": 0.5,
+            "contradiction_resolution": 0.5,
+            "event_ordering": 0.1339285714285714,
+            "information_extraction": 0.5,
+            "instruction_following": 0.5,
+            "knowledge_update": 1.0,
+            "multi_session_reasoning": 0.625,
+            "preference_following": 0.75,
+            "summarization": 0.55,
+            "temporal_reasoning": 0.5
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam100k1",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-100k-1/report.json",
+          "recorded_at": "2026-08-01T02:01:14.597463+00:00"
+        },
+        {
+          "run_id": "beam-1m-1-clean-product",
+          "track": "product",
+          "bench_profile": "product",
+          "scope": "1M/1",
+          "size": "1M",
+          "samples": [
+            "1M/1"
+          ],
+          "n_questions": 20,
+          "headline_score": 0.5520385817869101,
+          "headline_score_pct": 55.2,
+          "per_ability": {
+            "abstention": 0.5,
+            "contradiction_resolution": 0.375,
+            "event_ordering": 0.35024692898021254,
+            "information_extraction": 1.0,
+            "instruction_following": 0.5,
+            "knowledge_update": 0.5,
+            "multi_session_reasoning": 0.625,
+            "preference_following": 0.75,
+            "summarization": 0.4201388888888889,
+            "temporal_reasoning": 0.5
+          },
+          "answer_model": "deepseek-v4-flash",
+          "judge_model": "deepseek-v4-flash",
+          "brain": "beam1m1clean",
+          "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+          "report_path": "runs/beam-1m-1-clean-product/report.json",
+          "recorded_at": "2026-08-03T06:59:14.016975+00:00"
         }
       ]
     }

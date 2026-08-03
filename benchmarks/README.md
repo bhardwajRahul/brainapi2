@@ -1,3 +1,16 @@
+# Benchmarks for BrainAPI
+
+Standalone HTTP-only harnesses (no `src/` imports):
+
+| Suite | Package | Wrapper |
+| --- | --- | --- |
+| [LoCoMo](https://github.com/snap-research/LoCoMo) | `locomo/` | `./locomo.sh` |
+| [LongMemEval](https://github.com/xiaowu0162/LongMemEval) | `longmemeval/` | `./longmemeval.sh` |
+
+Shared setup: `requirements.txt`, `.env` (`BRAINPAT_TOKEN`, LLM keys). Results ledger: [`REPORTS.json`](REPORTS.json). Agent notes: [`AGENTS.md`](AGENTS.md).
+
+---
+
 # LoCoMo benchmark for BrainAPI
 
 Standalone harness that:
@@ -204,15 +217,104 @@ Create a sibling package under `benchmarks/`:
 
 ```text
 benchmarks/
-  locomo/          # this package
+  locomo/          # LoCoMo package
+  longmemeval/     # LongMemEval package
   yourbench/       # new package with its own cli / client / metrics
   requirements.txt # shared deps, or a per-bench requirements file
 ```
 
-Reuse patterns from `locomo/`:
+Reuse patterns from `locomo/` / `longmemeval/`:
 
 - HTTP-only `BrainAPIClient`
 - JSONL resume files under `runs/`
 - Separate ingest → evaluate → report stages
+- Upsert into `REPORTS.json` under `benchmarks.<suite_id>`
 
 Keep each benchmark self-contained and free of imports from BrainAPI's `src/`.
+
+---
+
+# LongMemEval benchmark for BrainAPI
+
+Sibling harness for [LongMemEval](https://github.com/xiaowu0162/LongMemEval) (cleaned HF release).
+
+1. Downloads cleaned LongMemEval_S (default), oracle, or M
+2. Ingests each question's haystack into its own brain (`lme…`)
+3. Answers via `POST /retrieve/context` + LLM (includes `question_date`)
+4. Scores with official LongMemEval yes/no judge prompts by `question_type`
+
+Protocol: [`docs/research/09-longmemeval-protocol.md`](../docs/research/09-longmemeval-protocol.md).
+
+## Quickstart
+
+```bash
+./longmemeval.sh download --variant s
+./longmemeval.sh dataset-stats --variant s
+./longmemeval.sh smoke --limit 1
+./longmemeval.sh ingest --run lme-s-smoke --limit 3
+./longmemeval.sh evaluate --run lme-s-smoke --limit 3
+./longmemeval.sh report --run lme-s-smoke
+./longmemeval.sh selftest-metrics
+./longmemeval.sh prompt-audit
+```
+
+### Useful flags
+
+- `--variant s|oracle|m`
+- `--question-id <id>` (repeatable)
+- `--limit N` / `--limit-sessions N`
+- `--concurrency N`
+- `--dry-run` / `--no-resume`
+
+### Scoring
+
+- **Headline**: LLM yes/no accuracy over all questions (including abstention).
+- Also: per-`question_type` accuracy, abstention accuracy, session recall vs `answer_session_ids` (abstention skipped), retrieval latency, LLM tokens.
+- Successful runs with ≥50 scored questions upsert `benchmarks.longmemeval` in `REPORTS.json`.
+
+Do **not** ingest gold answers or `has_answer` turn labels.
+
+---
+
+# BEAM benchmark for BrainAPI
+
+Sibling harness for [BEAM](https://github.com/mohammadtavakoli78/BEAM) (ICLR 2026). Evaluates BrainAPI as long-term memory on multi-scale chats (`100K` / `500K` / `1M`). BEAM-10M is deferred.
+
+1. Downloads HuggingFace `Mohammadta/BEAM` and normalizes under `data/beam/`
+2. Ingests each batch turn into a brain (`beam100k1`, …)
+3. Answers probing questions via `POST /retrieve/context` + LLM
+4. Scores with BEAM rubric LLM-judge (10 abilities); headline = mean of ability means
+
+Protocol: [`docs/research/10-beam-protocol.md`](../docs/research/10-beam-protocol.md).
+
+## Quickstart
+
+```bash
+./beam.sh download --size 100K
+./beam.sh dataset-stats --size 100K
+./beam.sh smoke --size 100K --sample 1
+./beam.sh ingest --size 100K --sample 1 --run beam-100k-1 --limit-turns 10
+./beam.sh evaluate --size 100K --sample 1 --run beam-100k-1 --limit 5
+./beam.sh report --run beam-100k-1
+./beam.sh selftest
+```
+
+### Useful flags
+
+- `--size 100K|500K|1M`
+- `--sample <id>` (repeatable; id or `size/id`)
+- `--limit-turns N` / `--limit N` / `--abilities a,b,…`
+- `--concurrency N` (ingest default 2; BEAM 1M prefer 2–3, ≤4; keep ≤ `CELERY_WORKER_CONCURRENCY`)
+- `--dry-run` / `--no-resume` (resume skips completed + permanent embed-8192 fails)
+
+### Scoring
+
+- **Headline**: mean of 10 ability means (`headline_score`).
+- `event_ordering` uses Kendall `tau_norm`; others use mean rubric `llm_judge_score`.
+- Judge variant: `beam-rubric-v1-question-aware` (question-aware, float scores).
+- Successful runs with ≥20 scored questions upsert `benchmarks.beam` in `REPORTS.json`.
+
+Do **not** ingest probing questions, rubrics, or ideal answers.
+
+**Cost warning:** even one 100K chat is ~100+ turns; start with `--limit-turns` / `--limit`.
+**1M wall time:** ~40h at concurrency 1; ~20–25h at 2 with healthy API (see `docs/research/10-beam-protocol.md`).
