@@ -28,3 +28,5 @@ tui/dist
 tui/embedded
 
 .agent_tmp
+
+dump.rdb
