@@ -619,6 +619,8 @@ Lowest priority, but both are latent hazards.
 
 **Checkpoint 6.** Full Phase 0 suite plus the retrieval-side metrics from `02-retrieval-multihop.md`, as input to the cross-workstream roadmap.
 
+**Cost / latency companions.** Shipped token accounting, Observations/consolidator defaults, Architect-per-Scout-unit bounding, batched Janitor, and incremental hub indexing are owned by [`10-ingest-cost-latency.md`](10-ingest-cost-latency.md). The next bounded batch-extraction and Janitor-exception plan is [`11-architect-loop-efficiency-plan.md`](11-architect-loop-efficiency-plan.md). Do not use `PIPELINE_MODE=lightweight` as a cost lever for accurate-mode quality goals.
+
 ---
 
 ## Risks

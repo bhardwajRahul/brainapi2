@@ -34,6 +34,10 @@ Anything expensive must be either moved to write time or exposed only on the dee
 | `04-evaluation-and-applications.md` | Measurement validity, failure attribution, recommendation/agent-surface metrics |
 | `05-temporal-truth.md` | Cross-cutting: how the system knows what is currently true, write time through read time |
 | `07-event-graphrag-improvement-plan.md` | Active event-hub GraphRAG execution plan (post Phase 1); see also `06` Phase 4 |
+| `10-ingest-cost-latency.md` | Accurate-mode ingest token/latency reduction without quality trade-offs |
+| `11-architect-loop-efficiency-plan.md` | Architect/Janitor redesign for peer-competitive ingest token multipliers |
+| `12-locomo-93-at-low-multiplier.md` | Dual goal: ≥93% LoCoMo SOTA at ~15–20× ingest median (no escalate storms) |
+| `13-locomo-93-research-levers.md` | Evidence-backed research levers for HyperMem-class ≥93% (harness-first) |
 
 ## Decisions already taken during research
 

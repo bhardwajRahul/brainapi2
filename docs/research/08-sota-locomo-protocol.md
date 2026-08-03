@@ -49,7 +49,7 @@ Manifest fields: `bench_profile`, `sc_samples`, `gap_fill`, answer/judge models,
 | Date | Arm | Scope | Profile | Acc | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 2026-07-29 | `phase-sota-d1-conv26` | conv-26 / `locomoconv26clean` | sota: deepseek-v4-flash, SC=3, gap-fill, hardened prompt + topics | **84.9%** | Open-domain **69.2%**; answerer gap **9.2%**. McNemar vs D.1 ns. Topic session-id leak in text_context fixed after run. |
-| (queued) | `sota-locomo10-*` | full LoCoMo10 | sota + deepseek-v4-flash | | Ingest `sota-locomo10-ingest`. Eval: `benchmarks/scripts/run_sota_locomo10.sh` |
+| 2026-07-31 | `sota-locomo10-batch-compose` | full LoCoMo10 / `locomof10c*` | sota: deepseek-v4-flash, SC=5, gap-fill, compose harness | **81.0%** | n=1540; mean/med ingest mult 90.6×/45.6×; **no ≥93% claim** |
 
 ## Failure taxonomy (Task 0.2)
 

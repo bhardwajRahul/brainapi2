@@ -292,3 +292,7 @@ The remaining case for Phase 4 work is not "the ablation proved the graph wins o
 | Latency attribution is wrong because it was inferred, not measured | Medium | **Mitigated:** 3.1 measured; dossier deletion confirmed live (~4.8 s → ~1.4 s) |
 | Cardinality still missing after the hotfix | Medium | One-to-many non-event predicates still wrongly deprecated; Task 4.1 |
 | Unrepaired brains silently confound every comparison | High | Record `ingest.n` per run; require a fresh ingest for any graph-side claim |
+
+## Related: ingest cost workstream
+
+Accurate-mode ingest token and latency reductions (instrumentation, Observations/consolidator defaults, Architect unit bounding, batched Janitor, hub refresh) live in [`10-ingest-cost-latency.md`](10-ingest-cost-latency.md). That work must not regress event-hub shape or LoCoMo/LongMemEval quality; `lightweight` remains out of scope as a cost lever. Architect-loop redesign toward peer-competitive token multipliers is in [`11-architect-loop-efficiency-plan.md`](11-architect-loop-efficiency-plan.md).
