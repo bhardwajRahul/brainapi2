@@ -71,9 +71,33 @@ def format_turn(turn: dict[str, Any]) -> str:
     caption = turn.get("blip_caption")
     if caption:
         text = f"{text} [image: {caption}]".strip()
+    query = (turn.get("query") or "").strip()
+    if query:
+        text = f"{text} [image query: {query}]".strip()
     speaker = turn.get("speaker") or "Unknown"
     dia_id = turn.get("dia_id") or "?"
     return f"{speaker} ({dia_id}): {text}"
+
+
+def iter_image_cues(sample: dict[str, Any]) -> list[str]:
+    """Surface LoCoMo image query strings (often more specific than BLIP captions)."""
+    conversation = sample.get("conversation") or {}
+    lines: list[str] = []
+    for session_key in session_keys(conversation):
+        for turn in conversation.get(session_key) or []:
+            if not isinstance(turn, dict):
+                continue
+            query = (turn.get("query") or "").strip()
+            if not query:
+                continue
+            speaker = turn.get("speaker") or "Unknown"
+            dia_id = turn.get("dia_id") or "?"
+            caption = (turn.get("blip_caption") or "").strip()
+            extra = f"; caption: {caption}" if caption else ""
+            lines.append(
+                f"{speaker} ({dia_id}) [{session_key}]: [image query: {query}]{extra}"
+            )
+    return lines
 
 
 def format_session(conversation: dict[str, Any], session_key: str) -> str:

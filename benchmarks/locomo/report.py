@@ -93,6 +93,50 @@ def build_report(run_dir: Path) -> dict[str, Any]:
         "dry_run": sum(1 for r in ingest_latest if r.get("status") == "dry_run"),
         "attempts": len(ingest_rows),
     }
+    wait_vals = [
+        float(r["wait_latency_ms"])
+        for r in ingest_latest
+        if r.get("wait_latency_ms") is not None
+    ]
+    token_vals = [
+        int(r["total_llm_tokens"])
+        for r in ingest_latest
+        if r.get("total_llm_tokens") is not None
+    ]
+    if wait_vals:
+        ordered = sorted(wait_vals)
+        mid = len(ordered) // 2
+        ingest_summary["wait_latency_p50_ms"] = (
+            ordered[mid]
+            if len(ordered) % 2
+            else (ordered[mid - 1] + ordered[mid]) / 2
+        )
+        ingest_summary["wait_latency_mean_ms"] = sum(ordered) / len(ordered)
+    if token_vals:
+        ingest_summary["mean_ingest_llm_tokens"] = sum(token_vals) / len(token_vals)
+        ingest_summary["total_ingest_llm_tokens"] = sum(token_vals)
+        stage_keys = (
+            "scout_total_tokens",
+            "architect_total_tokens",
+            "janitor_total_tokens",
+            "observations_total_tokens",
+            "consolidation_total_tokens",
+        )
+        stage_sums = {k: 0 for k in stage_keys}
+        stage_n = 0
+        for row in ingest_latest:
+            cost = row.get("cost") or {}
+            stages = cost.get("stages") if isinstance(cost, dict) else None
+            if not isinstance(stages, dict):
+                continue
+            stage_n += 1
+            for key in stage_keys:
+                stage_name = key.replace("_total_tokens", "")
+                stage_sums[key] += int((stages.get(stage_name) or {}).get("total_tokens") or 0)
+        if stage_n:
+            ingest_summary["mean_tokens_by_stage"] = {
+                k.replace("_total_tokens", ""): stage_sums[k] / stage_n for k in stage_keys
+            }
 
     integrity = {
         "rows_in_file": len(all_answer_rows),
@@ -290,6 +334,43 @@ def render_markdown(report: dict[str, Any]) -> str:
                 [f"- Attempts (incl. retries): {report['ingest'].get('attempts')}"]
                 if report["ingest"].get("attempts")
                 and report["ingest"].get("attempts") != report["ingest"].get("n")
+                else []
+            ),
+            *(
+                [
+                    f"- Ingest wait latency p50: "
+                    f"{_num(report['ingest'].get('wait_latency_p50_ms'))} ms"
+                ]
+                if report["ingest"].get("wait_latency_p50_ms") is not None
+                else []
+            ),
+            *(
+                [
+                    f"- Mean ingest LLM tokens/unit: "
+                    f"{_num(report['ingest'].get('mean_ingest_llm_tokens'))}"
+                ]
+                if report["ingest"].get("mean_ingest_llm_tokens") is not None
+                else []
+            ),
+            *(
+                [
+                    f"- Total ingest LLM tokens: "
+                    f"{report['ingest'].get('total_ingest_llm_tokens')}"
+                ]
+                if report["ingest"].get("total_ingest_llm_tokens") is not None
+                else []
+            ),
+            *(
+                [
+                    "- Mean tokens by stage: "
+                    + ", ".join(
+                        f"{k}={_num(v)}"
+                        for k, v in (
+                            report["ingest"].get("mean_tokens_by_stage") or {}
+                        ).items()
+                    )
+                ]
+                if report["ingest"].get("mean_tokens_by_stage")
                 else []
             ),
             "",

@@ -33,6 +33,8 @@ class IngestRecord:
     granularity: str
     dry_run: bool
     timestamp: str
+    cost: dict[str, Any] | None = None
+    total_llm_tokens: int | None = None
 
 
 def _utc_now() -> str:
@@ -152,6 +154,10 @@ def ingest_samples(
                 )
                 status = (waited.data or {}).get("status", "unknown")
                 error = (waited.data or {}).get("error")
+                cost = (waited.data or {}).get("cost")
+                total_llm_tokens = None
+                if isinstance(cost, dict):
+                    total_llm_tokens = cost.get("total_llm_tokens")
                 record = IngestRecord(
                     sample_id=job["sample_id"],
                     brain_id=job["brain_id"],
@@ -165,6 +171,10 @@ def ingest_samples(
                     granularity=granularity,
                     dry_run=False,
                     timestamp=_utc_now(),
+                    cost=cost if isinstance(cost, dict) else None,
+                    total_llm_tokens=(
+                        int(total_llm_tokens) if total_llm_tokens is not None else None
+                    ),
                 )
             except Exception as exc:
                 record = IngestRecord(

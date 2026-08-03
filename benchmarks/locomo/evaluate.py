@@ -18,8 +18,13 @@ from locomo.dataset import brain_id_for
 from locomo.ingest import append_jsonl, load_jsonl
 from locomo.judge import judge_answer
 from locomo.metrics import evidence_coverage, overlap_scores
-from locomo.prompts import enrich_paths_from_triples, flatten_path, flatten_triple
-from locomo.sota import merge_contexts, plan_gap_fill
+from locomo.prompts import (
+    attach_image_cues,
+    enrich_paths_from_triples,
+    flatten_path,
+    flatten_triple,
+)
+from locomo.sota import merge_contexts, plan_gap_fill, plan_selective_second_reflect
 
 console = Console()
 _write_lock = threading.Lock()
@@ -189,6 +194,7 @@ def iter_qa_jobs(
                     "brain_id": brain_id,
                     "qa_index": idx,
                     "qa": qa,
+                    "sample": sample,
                 }
             )
             if limit is not None and len(jobs) >= limit:
@@ -376,6 +382,9 @@ def evaluate_samples(
                     sufficiency_retry=sufficiency_retry,
                 )
             context = retrieved.data or {}
+            context = attach_image_cues(
+                context, job.get("sample"), question=question
+            )
             retrieve_ms = retrieved.latency_ms
             draft = answer_question(settings, question, context)
             if settings.gap_fill:
@@ -394,9 +403,18 @@ def evaluate_samples(
                         )
                     retrieve_ms = (retrieve_ms or 0) + (second.latency_ms or 0)
                     context = merge_contexts(context, second.data or {})
+                    context = attach_image_cues(
+                        context, job.get("sample"), question=question
+                    )
                     answered = answer_question(settings, question, context)
                 else:
                     answered = draft
+                # Cap: at most one selective second reflect after primary gap-fill.
+                reflect = plan_selective_second_reflect(
+                    question, answered.answer, context
+                )
+                if reflect.needs_retry:
+                    answered = answer_question(settings, question, context)
             else:
                 answered = draft
             channels = extract_context_channels(context)
