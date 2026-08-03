@@ -22,12 +22,14 @@ Typical flow: `download` → `ingest` → `evaluate` → `report` via `./longmem
 
 Typical flow: `download` → `ingest` → `evaluate` → `report` via `./beam.sh` or `.venv/bin/python -m beam`.
 
-- Dataset: HuggingFace `Mohammadta/BEAM` splits `100K` / `500K` / `1M` (BEAM-10M deferred).
+- Dataset: HuggingFace `Mohammadta/BEAM` (`100K` / `500K` / `1M`) and `Mohammadta/BEAM-10M` (`10M`). Harness supports all four sizes in `CHAT_SIZES`.
+- 10M normalize: concatenate interlocking plans chronologically into one chat (`bN_tM` / `session_N`); see [`docs/research/10-beam-protocol.md`](../docs/research/10-beam-protocol.md) § BEAM-10M. Brain `beam10m1` / `--brain beam10m1clean`; never wipe `beam1m1clean`.
+- Download sample 1 once `.env` exists: `./beam.sh download --size 10M` then `./beam.sh dataset-stats --size 10M` (read `n_turns` before any ETA). Ingest/eval still need live API + explicit go (`scripts/run_beam_10m_1_ingest_eval.sh`).
 - Ingest turns only — never probing questions, rubrics, or ideal answers.
 - Scoring: rubric LLM-judge (`judge_prompt_variant: beam-rubric-v1-question-aware`); headline = mean of 10 ability means; `event_ordering` uses `tau_norm`.
-- Brain IDs: `beam{size}{convid}` → e.g. `beam100k1`.
+- Brain IDs: `beam{size}{convid}` → e.g. `beam100k1`, `beam10m1`.
 - Protocol: [`docs/research/10-beam-protocol.md`](../docs/research/10-beam-protocol.md).
-- Ingest parallelism: prefer `--concurrency 2` (≤4); resume skips permanent embed-8192 fails. See protocol “Parallel ingest” + `scripts/run_beam_1m_1_ingest_eval.sh` (`BEAM_INGEST_CONCURRENCY`). Do not wipe live eval brains.
+- Ingest parallelism: prefer `--concurrency 2` (≤4); resume skips permanent embed-8192 fails. See protocol “Parallel ingest” + `scripts/run_beam_1m_1_ingest_eval.sh` / `scripts/run_beam_10m_1_ingest_eval.sh` (`BEAM_INGEST_CONCURRENCY`). Do not wipe live eval brains.
 
 ## Results ledger (`REPORTS.json`)
 

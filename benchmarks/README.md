@@ -278,14 +278,14 @@ Do **not** ingest gold answers or `has_answer` turn labels.
 
 # BEAM benchmark for BrainAPI
 
-Sibling harness for [BEAM](https://github.com/mohammadtavakoli78/BEAM) (ICLR 2026). Evaluates BrainAPI as long-term memory on multi-scale chats (`100K` / `500K` / `1M`). BEAM-10M is deferred.
+Sibling harness for [BEAM](https://github.com/mohammadtavakoli78/BEAM) (ICLR 2026). Evaluates BrainAPI as long-term memory on multi-scale chats (`100K` / `500K` / `1M` / `10M`).
 
-1. Downloads HuggingFace `Mohammadta/BEAM` and normalizes under `data/beam/`
-2. Ingests each batch turn into a brain (`beam100k1`, …)
+1. Downloads HuggingFace `Mohammadta/BEAM` (and `Mohammadta/BEAM-10M` for `--size 10M`) and normalizes under `data/beam/`
+2. Ingests each batch turn into a brain (`beam100k1`, `beam10m1`, …)
 3. Answers probing questions via `POST /retrieve/context` + LLM
 4. Scores with BEAM rubric LLM-judge (10 abilities); headline = mean of ability means
 
-Protocol: [`docs/research/10-beam-protocol.md`](../docs/research/10-beam-protocol.md).
+Protocol: [`docs/research/10-beam-protocol.md`](../docs/research/10-beam-protocol.md). 10M rows concatenate interlocking plans chronologically into one chat (same `bN_tM` / `session_N` path as 1M).
 
 ## Quickstart
 
@@ -299,12 +299,21 @@ Protocol: [`docs/research/10-beam-protocol.md`](../docs/research/10-beam-protoco
 ./beam.sh selftest
 ```
 
+10M (after `benchmarks/.env` + live API; do not start long ingest casually):
+
+```bash
+./beam.sh download --size 10M
+./beam.sh dataset-stats --size 10M   # read n_turns / ingest_target first
+./beam.sh smoke --size 10M --sample 1 --limit-turns 2
+# durable campaign: scripts/boot_beam_10m_screen.sh + beam_10m_keepalive.sh
+```
+
 ### Useful flags
 
-- `--size 100K|500K|1M`
+- `--size 100K|500K|1M|10M`
 - `--sample <id>` (repeatable; id or `size/id`)
 - `--limit-turns N` / `--limit N` / `--abilities a,b,…`
-- `--concurrency N` (ingest default 2; BEAM 1M prefer 2–3, ≤4; keep ≤ `CELERY_WORKER_CONCURRENCY`)
+- `--concurrency N` (ingest default 2; BEAM 1M/10M prefer 2–3, ≤4; keep ≤ `CELERY_WORKER_CONCURRENCY`)
 - `--dry-run` / `--no-resume` (resume skips completed + permanent embed-8192 fails)
 
 ### Scoring

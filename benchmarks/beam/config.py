@@ -11,12 +11,19 @@ DATA_DIR = BENCHMARKS_ROOT / "data"
 RUNS_DIR = BENCHMARKS_ROOT / "runs"
 DEFAULT_BEAM_DATA_DIR = DATA_DIR / "beam"
 DEFAULT_HF_DATASET = "Mohammadta/BEAM"
+DEFAULT_HF_DATASET_10M = "Mohammadta/BEAM-10M"
 DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
 DEFAULT_ANSWER_MODEL = "deepseek-v4-flash"
 DEFAULT_AZURE_JUDGE_MODEL = "gpt-4o"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
 
-CHAT_SIZES = ("100K", "500K", "1M")
+CHAT_SIZES = ("100K", "500K", "1M", "10M")
+HF_DATASET_BY_SIZE = {
+    "100K": DEFAULT_HF_DATASET,
+    "500K": DEFAULT_HF_DATASET,
+    "1M": DEFAULT_HF_DATASET,
+    "10M": DEFAULT_HF_DATASET_10M,
+}
 ABILITY_NAMES = (
     "abstention",
     "contradiction_resolution",
@@ -70,6 +77,7 @@ class Settings:
     judge_azure_api_version: str
     beam_data_dir: Path
     hf_dataset: str
+    hf_dataset_10m: str
     runs_dir: Path
     bench_profile: str = "product"
     sc_samples: int = 1
@@ -77,6 +85,11 @@ class Settings:
     gap_fill: bool = False
     answer_azure_endpoint: str | None = None
     answer_azure_api_version: str = DEFAULT_AZURE_API_VERSION
+
+    def hf_dataset_for(self, size: str) -> str:
+        if size == "10M":
+            return self.hf_dataset_10m
+        return self.hf_dataset
 
     @classmethod
     def load(cls, env_file: Path | None = None) -> "Settings":
@@ -143,6 +156,9 @@ class Settings:
                 os.getenv("BENCH_BEAM_DATA_DIR", str(DEFAULT_BEAM_DATA_DIR))
             ),
             hf_dataset=os.getenv("BENCH_BEAM_HF_DATASET", DEFAULT_HF_DATASET),
+            hf_dataset_10m=os.getenv(
+                "BENCH_BEAM_HF_DATASET_10M", DEFAULT_HF_DATASET_10M
+            ),
             runs_dir=Path(os.getenv("BENCH_RUNS_DIR", str(RUNS_DIR))),
             bench_profile=str(defaults["bench_profile"]),
             sc_samples=max(1, int(defaults["sc_samples"])),

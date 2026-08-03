@@ -73,7 +73,9 @@ def cmd_dataset_stats(args: argparse.Namespace, settings: Settings) -> int:
         )
     console.print(table)
     assert brain_id_for("100K", "1") == "beam100k1"
+    assert brain_id_for("10M", "1") == "beam10m1"
     console.print("[dim]brain_id_for('100K', '1') == 'beam100k1' OK[/dim]")
+    console.print("[dim]brain_id_for('10M', '1') == 'beam10m1' OK[/dim]")
     return 0
 
 
@@ -239,6 +241,8 @@ def cmd_selftest(args: argparse.Namespace, settings: Settings) -> int:
         errors.append("brain_id_for('100K','1') != 'beam100k1'")
     if brain_id_for("1M", "12") != "beam1m12":
         errors.append("brain_id_for('1M','12') != 'beam1m12'")
+    if brain_id_for("10M", "1") != "beam10m1":
+        errors.append("brain_id_for('10M','1') != 'beam10m1'")
 
     prompt = build_rubric_judge_prompt(
         "When does my sprint end?",
@@ -311,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--size",
         choices=CHAT_SIZES,
         default=None,
-        help="Download one size only (default: all 100K/500K/1M)",
+        help="Download one size only (default: all 100K/500K/1M/10M)",
     )
     p_download.add_argument(
         "--force",

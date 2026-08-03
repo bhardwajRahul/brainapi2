@@ -8,6 +8,10 @@ from typing import Any
 
 from beam.config import ABILITY_NAMES, CHAT_SIZES, Settings
 
+_PLAN_KEY_RE = re.compile(r"^plan[-_]?(\d+)$", re.IGNORECASE)
+NORMALIZE_STRATEGY_SINGLE = "single_chat"
+NORMALIZE_STRATEGY_PLANS = "concatenate_plans_chronological"
+
 
 def brain_id_for(size: str, conversation_id: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]", "", f"beam{size}{conversation_id}")
@@ -79,6 +83,171 @@ def convert_chat_batches(chat: list[Any]) -> list[dict[str, Any]]:
     return json_object
 
 
+def plan_sort_key(label: Any) -> tuple[int, str]:
+    text = str(label or "").strip()
+    match = _PLAN_KEY_RE.match(text)
+    if match:
+        return (int(match.group(1)), text)
+    if text.isdigit():
+        return (int(text), text)
+    return (10**9, text)
+
+
+def _as_mapping(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return None
+    keys = getattr(value, "keys", None)
+    if callable(keys):
+        try:
+            return {str(k): value[k] for k in keys()}
+        except Exception:
+            return None
+    return None
+
+
+def _iter_plan_keyed_entries(chat: Any) -> list[tuple[str, Any]]:
+    """Yield (plan_id, payload) from BEAM-10M main chat (plan-1..plan-10)."""
+    mapping = _as_mapping(chat)
+    if mapping is not None:
+        entries = [
+            (key, mapping[key])
+            for key in mapping
+            if _PLAN_KEY_RE.match(str(key).strip())
+        ]
+        entries.sort(key=lambda item: plan_sort_key(item[0]))
+        return entries
+    if isinstance(chat, list):
+        collected: list[tuple[str, Any]] = []
+        for item in chat:
+            nested = _as_mapping(item)
+            if nested is None:
+                continue
+            for key, payload in nested.items():
+                if _PLAN_KEY_RE.match(str(key).strip()):
+                    collected.append((str(key), payload))
+        collected.sort(key=lambda item: plan_sort_key(item[0]))
+        return collected
+    return []
+
+
+def _batches_from_chat_payload(value: Any) -> list[dict[str, Any]]:
+    """Accept already-normalized batches or raw HF message-list chat."""
+    if not isinstance(value, list) or not value:
+        return []
+    first = value[0]
+    if isinstance(first, dict) and "turns" in first:
+        return [row for row in value if isinstance(row, dict) and row.get("turns")]
+    if isinstance(first, list):
+        return [row for row in convert_chat_batches(value) if row.get("turns")]
+    return []
+
+
+def concatenate_plan_batches(
+    plan_batches: list[tuple[str, list[dict[str, Any]]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Merge plan chats in chronological order into one chat.json-compatible list.
+
+    Reassigns batch_number globally so unit ids remain unique under the existing
+    bN_tM / session_N conventions used by the 1M ingest path.
+    """
+    out: list[dict[str, Any]] = []
+    plan_meta: list[dict[str, Any]] = []
+    next_batch = 1
+    for plan_id, batches in plan_batches:
+        start = next_batch
+        n_turns = 0
+        for batch in batches:
+            turns = batch.get("turns") or []
+            if not isinstance(turns, list) or not turns:
+                continue
+            n_turns += len(turns)
+            out.append(
+                {
+                    "batch_number": next_batch,
+                    "turns": turns,
+                    "time_anchor": batch.get("time_anchor"),
+                    "plan_id": plan_id,
+                }
+            )
+            next_batch += 1
+        if next_batch > start:
+            plan_meta.append(
+                {
+                    "plan_id": plan_id,
+                    "batch_number_start": start,
+                    "batch_number_end": next_batch - 1,
+                    "n_batches": next_batch - start,
+                    "n_turns": n_turns,
+                }
+            )
+    return out, plan_meta
+
+
+def extract_normalized_chat(
+    row: dict[str, Any],
+    *,
+    size: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Build normalized chat batches for a HF row.
+
+    BEAM-10M: concatenate plan-1..plan-10 (or plans[]) chronologically into one
+    long chat. Smaller sizes: single-chat convert_chat_batches path.
+    """
+    chat = row.get("chat")
+    plans = row.get("plans")
+    plan_entries = _iter_plan_keyed_entries(chat)
+    use_multi_plan = size == "10M" or bool(plan_entries) or (
+        isinstance(plans, list) and bool(plans)
+    )
+
+    if use_multi_plan:
+        ordered: list[tuple[str, list[dict[str, Any]]]] = []
+        if plan_entries:
+            for plan_id, payload in plan_entries:
+                batches = _batches_from_chat_payload(payload)
+                if batches:
+                    ordered.append((str(plan_id), batches))
+            source = "chat_plan_keys"
+        else:
+            source = "plans_array"
+            plan_rows = [p for p in (plans or []) if isinstance(p, dict)]
+            plan_rows.sort(
+                key=lambda p: plan_sort_key(p.get("plan_id") or p.get("id") or "")
+            )
+            for index, plan in enumerate(plan_rows):
+                plan_id = str(
+                    plan.get("plan_id") or plan.get("id") or f"plan-{index + 1}"
+                )
+                batches = _batches_from_chat_payload(plan.get("chat"))
+                if batches:
+                    ordered.append((plan_id, batches))
+
+        if ordered:
+            chat_json, plan_meta = concatenate_plan_batches(ordered)
+            return chat_json, {
+                "normalize_strategy": NORMALIZE_STRATEGY_PLANS,
+                "n_plans": len(plan_meta),
+                "plans": plan_meta,
+                "plan_source": source,
+            }
+
+    chat_list = chat if isinstance(chat, list) else []
+    return convert_chat_batches(chat_list), {
+        "normalize_strategy": NORMALIZE_STRATEGY_SINGLE,
+    }
+
+
+def ingest_target_turns(n_turns: int, *, slack: int = 5) -> int:
+    """Ops TARGET from normalized turn count (never invent without n_turns)."""
+    if n_turns <= 0:
+        return 0
+    return max(1, n_turns - max(0, slack))
+
+
 def _parse_probing_questions(raw: Any) -> dict[str, list[dict[str, Any]]]:
     if isinstance(raw, dict):
         data = raw
@@ -106,11 +275,23 @@ def write_conversation(
     size: str,
     conversation_id: str,
     topic: Any,
-    chat: list[Any],
+    chat: list[Any] | None = None,
     probing_questions: Any,
+    plans: Any = None,
+    row: dict[str, Any] | None = None,
 ) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
-    chat_json = convert_chat_batches(chat)
+    if row is not None:
+        chat_json, extra_meta = extract_normalized_chat(row, size=size)
+        if topic is None:
+            topic = row.get("conversation_seed")
+        if probing_questions is None:
+            probing_questions = row.get("probing_questions")
+    else:
+        chat_json, extra_meta = extract_normalized_chat(
+            {"chat": chat or [], "plans": plans},
+            size=size,
+        )
     probing = _parse_probing_questions(probing_questions)
     (dest / "chat.json").write_text(
         json.dumps(chat_json, ensure_ascii=False, indent=2),
@@ -125,14 +306,17 @@ def write_conversation(
             json.dumps(topic, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+    n_turns = sum(len(b.get("turns") or []) for b in chat_json)
     meta = {
         "conversation_id": str(conversation_id),
         "size": size,
         "sample_id": sample_id_for(size, str(conversation_id)),
         "brain_id": brain_id_for(size, str(conversation_id)),
         "n_batches": len(chat_json),
-        "n_turns": sum(len(b.get("turns") or []) for b in chat_json),
+        "n_turns": n_turns,
         "n_questions": sum(len(v) for v in probing.values()),
+        "ingest_target": ingest_target_turns(n_turns),
+        **extra_meta,
     }
     (dest / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2),
@@ -163,7 +347,8 @@ def download_and_normalize(
     settings.beam_data_dir.mkdir(parents=True, exist_ok=True)
 
     for size in selected:
-        conversations = load_dataset(settings.hf_dataset, split=size)
+        dataset_name = settings.hf_dataset_for(size)
+        conversations = load_dataset(dataset_name, split=size)
         for conversation in conversations:
             conversation_id = str(conversation["conversation_id"])
             dest = conversation_dir(
@@ -175,13 +360,14 @@ def download_and_normalize(
                 and (dest / "probing_questions.json").exists()
             ):
                 continue
+            row = dict(conversation)
             write_conversation(
                 dest,
                 size=size,
                 conversation_id=conversation_id,
-                topic=conversation.get("conversation_seed"),
-                chat=list(conversation.get("chat") or []),
-                probing_questions=conversation.get("probing_questions"),
+                topic=row.get("conversation_seed"),
+                probing_questions=row.get("probing_questions"),
+                row=row,
             )
     return settings.beam_data_dir
 

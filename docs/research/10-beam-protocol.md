@@ -8,13 +8,37 @@ This is **not** a port of LIGHT. BrainAPI replaces RAG/LIGHT via `POST /ingest/`
 
 | Item | Value |
 | --- | --- |
-| Source | HuggingFace [`Mohammadta/BEAM`](https://huggingface.co/datasets/Mohammadta/BEAM) |
+| Source (≤1M) | HuggingFace [`Mohammadta/BEAM`](https://huggingface.co/datasets/Mohammadta/BEAM) |
+| Source (10M) | HuggingFace [`Mohammadta/BEAM-10M`](https://huggingface.co/datasets/Mohammadta/BEAM-10M) |
 | License | CC BY-SA 4.0 |
-| Splits (v1) | `100K`, `500K`, `1M` (paper “128K” ≡ HF `100K`) |
-| Deferred | [`Mohammadta/BEAM-10M`](https://huggingface.co/datasets/Mohammadta/BEAM-10M) |
+| Splits | `100K`, `500K`, `1M`, `10M` (paper “128K” ≡ HF `100K`) |
 | Local path | `benchmarks/data/beam/{size}/{conversation_id}/` |
+| Env overrides | `BENCH_BEAM_HF_DATASET`, `BENCH_BEAM_HF_DATASET_10M` |
 
 Do **not** ingest probing questions, rubrics, or ideal answers.
+
+### BEAM-10M multi-plan normalize
+
+Paper + HF schema: each 10M row is ~10 interlocking plans (`plan-1`…`plan-10` / `plans[]`), generated sequentially so the narrative is chronological.
+
+**Harness decision:** concatenate plans in plan-number order into **one** long `chat.json`, then ingest with the same turn units as 1M (`bN_tM`, `session_N`, `time_anchor` stamps).
+
+| Choice | Why |
+| --- | --- |
+| Concatenate chronologically (not parallel brains) | Matches sequential plan expansion in the paper; probing spans the full dialogue |
+| Prefer main `chat` plan-* keys when present | HF already ships per-plan batches with `turns`; fall back to `plans[].chat` + `convert_chat_batches` |
+| Global `batch_number` renumber | Keeps unit ids unique under existing `bN_tM` resume keys |
+| `brain_id` | `beam10m1`; clean product claims use `--brain beam10m1clean` (never wipe `beam1m1clean`) |
+
+`meta.json` records `normalize_strategy: concatenate_plans_chronological`, `n_plans`, per-plan batch ranges, and `ingest_target` (`n_turns - 5`, floor 1). **Do not invent ETA/TARGET without reading `n_turns` after download.**
+
+```bash
+./beam.sh download --size 10M
+./beam.sh dataset-stats --size 10M
+# then smoke / ingest with --size 10M --sample 1 --brain beam10m1clean --run beam-10m-1-clean
+```
+
+Still requires `benchmarks/.env`, a live API + celery, and an **explicit** go before long ingest (see `scripts/run_beam_10m_1_ingest_eval.sh`).
 
 ## Pipeline
 
@@ -26,7 +50,7 @@ Do **not** ingest probing questions, rubrics, or ideal answers.
 ./beam.sh report --run beam-100k-1
 ```
 
-Brain IDs: `beam{size}{convid}` → `beam100k1`.
+Brain IDs: `beam{size}{convid}` → `beam100k1`, `beam10m1`.
 
 Ingest unit = one batch turn (user + assistant messages), with `time_anchor` as `source_timestamp` when present.
 
@@ -40,6 +64,8 @@ Ingest unit = one batch turn (user + assistant messages), with `time_anchor` as 
 | Stall | Ops scripts stop after 3 no-progress tries; harness does not requeue permanent embed-8192 fails |
 
 **ETA (1M/1, ~625 turns):** prior run ≈ **40 h** at concurrency **1**. Expect roughly **20–25 h** at **2**, **14–18 h** at **3** (contention / uvicorn restarts can erase ideal linear speedup).
+
+**10M:** derive TARGET from `meta.json` `n_turns` / `ingest_target` after normalize — do not scale 1M hours blindly.
 
 **Caveats:** concurrent units on one brain contend on Neo4j/Postgres and can knock over uvicorn under load. Keepalive must only restart when port **8000** is not LISTENing (never `pkill` a healthy API while evaluate-only is running). Prefer a **new brain id** for any full re-ingest; do not wipe brains mid-eval.
 
@@ -69,7 +95,7 @@ abstention, contradiction_resolution, event_ordering, information_extraction, in
 
 ## Cost notes
 
-100K chats average ~100+ turns; accurate ingest is slow/expensive. Start with `--limit-turns` / `--limit` and a single sample. Rubric judging can issue several LLM calls per question.
+100K chats average ~100+ turns; accurate ingest is slow/expensive. Start with `--limit-turns` / `--limit` and a single sample. Rubric judging can issue several LLM calls per question. 10M is far larger — count turns first.
 
 ## Citation
 

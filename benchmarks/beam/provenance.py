@@ -89,7 +89,9 @@ def build_provenance(settings: Settings, *, size: str | None = None) -> dict[str
         "judge_model_family": model_family(settings.judge_model),
         "judge_provider": settings.judge_provider(),
         "judge_shares_answer_family": settings.judge_shares_answer_family,
-        "hf_dataset": settings.hf_dataset,
+        "hf_dataset": (
+            settings.hf_dataset_for(size) if size else settings.hf_dataset
+        ),
         "bench_profile": settings.bench_profile,
         "sc_samples": settings.sc_samples,
         "sc_temperature": settings.sc_temperature,
