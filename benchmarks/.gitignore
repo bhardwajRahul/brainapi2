@@ -8,3 +8,8 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+
+!runs/beam-1m-1-product-v3c-compose/
+!runs/beam-1m-1-product-v3c-compose/run.tar.gz
+!runs/locomo-compose-sota-conv26-v4d/
+!runs/locomo-compose-sota-conv26-v4d/run.tar.gz

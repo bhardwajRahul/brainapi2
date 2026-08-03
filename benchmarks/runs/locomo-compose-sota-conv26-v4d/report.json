@@ -1,0 +1,189 @@
+{
+  "run_dir": "/Users/christiannonis/Documents/Projects/brainapi2/benchmarks/runs/locomo-compose-sota-conv26-v4d",
+  "manifest": {
+    "run_id": "locomo-compose-sota-conv26-v4d",
+    "command": "evaluate",
+    "samples": [
+      "conv-26"
+    ],
+    "concurrency": 2,
+    "skip_adversarial": true,
+    "categories": null,
+    "limit": null,
+    "brainapi_url": "http://localhost:8000",
+    "brain_override": "locomoconv26nostorm",
+    "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
+    "git_dirty": true,
+    "answer_prompt_sha256": "fd253f786ce84423478535a6aa95dc22b2961dd8f85c0d0a1f8bb035d56f8c37",
+    "judge_prompt_sha256": "94bc662ee22132e6d044145c395e014f0ff7787566a3088fdd781ba698e2c68e",
+    "dataset_path": "/Users/christiannonis/Documents/Projects/brainapi2/benchmarks/data/locomo10.json",
+    "dataset_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "answer_model": "deepseek-v4-flash",
+    "answer_model_family": "deepseek",
+    "answer_llm_base_url": "https://api.deepseek.com",
+    "judge_model": "deepseek-v4-flash",
+    "judge_model_family": "deepseek",
+    "judge_provider": "https://api.deepseek.com",
+    "judge_shares_answer_family": true,
+    "bench_profile": "sota",
+    "sc_samples": 5,
+    "sc_temperature": 0.7,
+    "gap_fill": true,
+    "historical_limit": 16,
+    "max_passages": 16,
+    "max_facts": 50,
+    "apply_fact_filter": false,
+    "use_ppr": true,
+    "sufficiency_retry": false,
+    "updated_at": "2026-07-31T13:09:47.457407+00:00",
+    "created_at": "2026-07-31T12:29:04.421641+00:00"
+  },
+  "ingest": {
+    "n": 0,
+    "completed": 0,
+    "partial_failed": 0,
+    "failed": 0,
+    "dry_run": 0,
+    "attempts": 0
+  },
+  "integrity": {
+    "rows_in_file": 152,
+    "errored_rows": 0,
+    "scored_rows": 152,
+    "duplicates_dropped": 0,
+    "empty_predictions": 0,
+    "rows_with_truncated_context": 152
+  },
+  "metrics": {
+    "n_total": 152,
+    "n_non_adversarial": 152,
+    "headline_judge_accuracy": 0.9539473684210527,
+    "headline_judge_accuracy_ci95": {
+      "low": 0.9079985714145771,
+      "high": 0.9775159510235909
+    },
+    "overall_judge_accuracy": 0.9539473684210527,
+    "overall_judge_accuracy_ci95": {
+      "low": 0.9079985714145771,
+      "high": 0.9775159510235909
+    },
+    "mean_f1_non_adversarial": 0.4614869329527768,
+    "mean_bleu1_non_adversarial": 0.3765365968236546,
+    "answerable_rate": 0.9407894736842105,
+    "evidence_session_recall_full": 0.9933333333333333,
+    "evidence_session_recall_partial": 0.9933333333333333,
+    "evidence_session_recall_by_channel": {
+      "graph": {
+        "full": 0.9866666666666667,
+        "partial": 0.9933333333333333,
+        "n_with_evidence": 150
+      },
+      "passages": {
+        "full": 0.9733333333333334,
+        "partial": 0.9866666666666667,
+        "n_with_evidence": 150
+      }
+    },
+    "answerer_gap": -0.013157894736842146,
+    "abstention": {
+      "n": 0,
+      "accuracy": null
+    },
+    "by_category": {
+      "1": {
+        "n": 32,
+        "judge_accuracy": 0.96875,
+        "judge_accuracy_ci95": {
+          "low": 0.8425539219962727,
+          "high": 0.9944622826374491
+        },
+        "mean_f1": 0.4111235834098218,
+        "mean_bleu1": 0.3235087575293351,
+        "n_scored_f1": 32,
+        "answerable_rate": 0.9375,
+        "evidence_session_recall_full": 1.0,
+        "evidence_session_recall_partial": 1.0,
+        "n_with_evidence": 32,
+        "evidence_session_recall_full_graph": 1.0,
+        "evidence_session_recall_partial_graph": 1.0,
+        "n_with_evidence_graph": 32,
+        "evidence_session_recall_full_passages": 0.96875,
+        "evidence_session_recall_partial_passages": 1.0,
+        "n_with_evidence_passages": 32
+      },
+      "2": {
+        "n": 37,
+        "judge_accuracy": 0.8918918918918919,
+        "judge_accuracy_ci95": {
+          "low": 0.7529115358483284,
+          "high": 0.9571487947949374
+        },
+        "mean_f1": 0.4511669743179182,
+        "mean_bleu1": 0.3686408136062067,
+        "n_scored_f1": 37,
+        "answerable_rate": 0.8918918918918919,
+        "evidence_session_recall_full": 0.972972972972973,
+        "evidence_session_recall_partial": 0.972972972972973,
+        "n_with_evidence": 37,
+        "evidence_session_recall_full_graph": 0.972972972972973,
+        "evidence_session_recall_partial_graph": 0.972972972972973,
+        "n_with_evidence_graph": 37,
+        "evidence_session_recall_full_passages": 0.9459459459459459,
+        "evidence_session_recall_partial_passages": 0.9459459459459459,
+        "n_with_evidence_passages": 37
+      },
+      "3": {
+        "n": 13,
+        "judge_accuracy": 1.0,
+        "judge_accuracy_ci95": {
+          "low": 0.7718981569447083,
+          "high": 1.0
+        },
+        "mean_f1": 0.15694089110267034,
+        "mean_bleu1": 0.09482646371834284,
+        "n_scored_f1": 13,
+        "answerable_rate": 0.7692307692307693,
+        "evidence_session_recall_full": 1.0,
+        "evidence_session_recall_partial": 1.0,
+        "n_with_evidence": 11,
+        "evidence_session_recall_full_graph": 0.9090909090909091,
+        "evidence_session_recall_partial_graph": 1.0,
+        "n_with_evidence_graph": 11,
+        "evidence_session_recall_full_passages": 0.9090909090909091,
+        "evidence_session_recall_partial_passages": 1.0,
+        "n_with_evidence_passages": 11
+      },
+      "4": {
+        "n": 70,
+        "judge_accuracy": 0.9714285714285714,
+        "judge_accuracy_ci95": {
+          "low": 0.9016755648760818,
+          "high": 0.9921295531061937
+        },
+        "mean_f1": 0.5465235643658585,
+        "mean_bleu1": 0.45726897634983815,
+        "n_scored_f1": 70,
+        "answerable_rate": 1.0,
+        "evidence_session_recall_full": 1.0,
+        "evidence_session_recall_partial": 1.0,
+        "n_with_evidence": 70,
+        "evidence_session_recall_full_graph": 1.0,
+        "evidence_session_recall_partial_graph": 1.0,
+        "n_with_evidence_graph": 70,
+        "evidence_session_recall_full_passages": 1.0,
+        "evidence_session_recall_partial_passages": 1.0,
+        "n_with_evidence_passages": 70
+      }
+    },
+    "retrieval_latency_ms": {
+      "p50": 5194.209478911944,
+      "p95": 13785.858870809898,
+      "mean": 6666.379101150118
+    },
+    "total_llm_tokens": 43859841
+  },
+  "status": "ok",
+  "warnings": [
+    "152 rows had a retrieved-context channel truncated before logging; see context_truncated in answers.jsonl."
+  ]
+}
