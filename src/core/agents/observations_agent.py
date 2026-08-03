@@ -24,7 +24,10 @@ class ObservationsAgent:
         self.llm_adapter = llm_adapter
 
     def observe(
-        self, text: str, observate_for: Optional[List[str]], context: Optional[str]
+        self,
+        text: str,
+        observate_for: Optional[List[str]] = None,
+        context: Optional[str] = None,
     ) -> list[str]:
         """
         Observe the world and update the knowledge graph with new information.
