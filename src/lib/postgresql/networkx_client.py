@@ -1378,6 +1378,61 @@ class NetworkXGraphClient(GraphClient):
         ]
         return self._store.replace_hub_bridges(brain_id, payload)
 
+    def refresh_hub_bridges_for_entities(
+        self, brain_id: str, entity_uuids: list[str]
+    ) -> int:
+        from src.core.saving.hub_bridges import (
+            bridges_from_memberships,
+            entity_event_memberships,
+            is_event_labels,
+        )
+
+        touched = sorted({str(u) for u in entity_uuids if u})
+        if not touched:
+            return self.rebuild_hub_bridge_index(brain_id)
+
+        self._store.ensure_database(brain_id)
+        brain = self._store.get_brain(brain_id)
+        touched_set = set(touched)
+        rows: list[tuple[str, str, str, str]] = []
+        for source, target, _key, edge_data in brain.graph.edges(keys=True, data=True):
+            rel_name = str(edge_data.get("rel_type") or edge_data.get("name") or "")
+            source_labels = brain.labels(source)
+            target_labels = brain.labels(target)
+            source_is_event = is_event_labels(source_labels)
+            target_is_event = is_event_labels(target_labels)
+            if source_is_event and not target_is_event and target in touched_set:
+                rows.append(
+                    (
+                        source,
+                        target,
+                        str(brain.node_data(target).get("name") or ""),
+                        rel_name,
+                    )
+                )
+            elif target_is_event and not source_is_event and source in touched_set:
+                rows.append(
+                    (
+                        target,
+                        source,
+                        str(brain.node_data(source).get("name") or ""),
+                        rel_name,
+                    )
+                )
+        bridges = bridges_from_memberships(entity_event_memberships(rows))
+        payload = [
+            (
+                br.event_a,
+                br.event_b,
+                br.shared_entity,
+                br.shared_entity_name,
+                br.weight,
+            )
+            for br in bridges
+        ]
+        self._store.delete_hub_bridges_for_entities(brain_id, touched)
+        return self._store.upsert_hub_bridges(brain_id, payload)
+
     def get_hub_bridges(
         self,
         event_uuids: list[str],
@@ -1412,13 +1467,19 @@ class NetworkXGraphClient(GraphClient):
 
         self._store.ensure_database(brain_id)
         brain = self._store.get_brain(brain_id)
-        session_re = re.compile(r"session_(\d+)", re.IGNORECASE)
+        session_re = re.compile(
+            r"session_(\d+)|(?:\b|_)b(\d+)_t(\d+)\b",
+            re.IGNORECASE,
+        )
 
         def sessions_from_text(text: str) -> list[str]:
             found: list[str] = []
             seen: set[str] = set()
             for match in session_re.finditer(text or ""):
-                sid = f"session_{match.group(1)}"
+                if match.group(1):
+                    sid = f"session_{match.group(1)}"
+                else:
+                    sid = f"session_b{match.group(2)}_t{match.group(3)}"
                 if sid not in seen:
                     seen.add(sid)
                     found.append(sid)

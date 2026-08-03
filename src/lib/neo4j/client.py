@@ -2207,6 +2207,81 @@ class Neo4jClient(GraphClient):
             )
         return len(bridges)
 
+    def refresh_hub_bridges_for_entities(
+        self, brain_id: str, entity_uuids: list[str]
+    ) -> int:
+        from src.core.saving.hub_bridges import (
+            bridges_from_memberships,
+            entity_event_memberships,
+        )
+
+        touched = sorted({str(u) for u in entity_uuids if u})
+        if not touched:
+            return self.rebuild_hub_bridge_index(brain_id)
+
+        self.ensure_database(brain_id)
+        cypher_rows = """
+        MATCH (event)-[r]-(entity)
+        WHERE 'EVENT' IN labels(event)
+          AND NOT 'EVENT' IN labels(entity)
+          AND type(r) <> 'HUB_BRIDGE'
+          AND entity['uuid'] IN $entity_uuids
+        RETURN event['uuid'] AS event_uuid,
+               entity['uuid'] AS entity_uuid,
+               entity['name'] AS entity_name,
+               type(r) AS rel_name
+        """
+        result = self.driver.execute_query(
+            cypher_rows,
+            parameters_={"entity_uuids": touched},
+            database_=brain_id,
+        )
+        rows = [
+            (
+                str(record.get("event_uuid") or ""),
+                str(record.get("entity_uuid") or ""),
+                str(record.get("entity_name") or ""),
+                str(record.get("rel_name") or ""),
+            )
+            for record in result.records
+        ]
+        bridges = bridges_from_memberships(entity_event_memberships(rows))
+        self.driver.execute_query(
+            """
+            MATCH ()-[r:HUB_BRIDGE]->()
+            WHERE r.shared_entity IN $entity_uuids
+            DELETE r
+            """,
+            parameters_={"entity_uuids": touched},
+            database_=brain_id,
+        )
+        for bridge in bridges:
+            self.driver.execute_query(
+                """
+                MATCH (a {uuid: $event_a}), (b {uuid: $event_b})
+                WHERE 'EVENT' IN labels(a) AND 'EVENT' IN labels(b)
+                MERGE (a)-[r:HUB_BRIDGE {
+                    shared_entity: $shared_entity
+                }]->(b)
+                SET r.shared_entity_name = $shared_entity_name,
+                    r.weight = $weight,
+                    r.uuid = $bridge_uuid
+                """,
+                parameters_={
+                    "event_a": bridge.event_a,
+                    "event_b": bridge.event_b,
+                    "shared_entity": bridge.shared_entity,
+                    "shared_entity_name": bridge.shared_entity_name,
+                    "weight": float(bridge.weight),
+                    "bridge_uuid": (
+                        f"hub-bridge:{bridge.event_a}:{bridge.event_b}:"
+                        f"{bridge.shared_entity}"
+                    ),
+                },
+                database_=brain_id,
+            )
+        return len(bridges)
+
     def get_hub_bridges(
         self,
         event_uuids: list[str],

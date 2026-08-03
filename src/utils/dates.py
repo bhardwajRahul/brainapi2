@@ -13,6 +13,8 @@ _DATE_INPUT_FORMATS = (
     "%b %d %Y",
     "%d %B %Y",
     "%d %b %Y",
+    "%B-%d-%Y",
+    "%b-%d-%Y",
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%dT%H:%M:%S.%f",

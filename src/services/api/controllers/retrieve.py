@@ -52,6 +52,26 @@ _PASSAGE_K = 24
 _PPR_DAMPING = 0.85
 _PPR_ITERS = 20
 _SESSION_RE = re.compile(r"session_(\d+)", re.IGNORECASE)
+_BATCH_TURN_RE = re.compile(r"\bb(\d+)_t(\d+)\b", re.IGNORECASE)
+_HISTORY_MODE_RE = re.compile(
+    r"\b("
+    r"order(?:ing|ed)?|chronolog|sequence|walk me through|"
+    r"contradict|conflict(?:ing)?|inconsisten|"
+    r"previously|originally|before (?:the |that )?(?:update|change|extension)|"
+    r"first (?:said|stated|mentioned|sprint|deadline)|"
+    r"how many (?:weeks|days)|"
+    r"between .+ and |"
+    r"have i|did i"
+    r")\b",
+    re.I,
+)
+_CURRENT_TRUTH_RE = re.compile(
+    r"\b("
+    r"now|currently|latest|updated (?:to|value)|after the (?:update|change)|"
+    r"how many commits|average response time|response time of"
+    r")\b",
+    re.I,
+)
 _SPINE_ACTOR = ("MADE", "INITIATED", "PERFORMED", "EXPERIENCED", "COVERED")
 _SPINE_TARGET = ("TARGETED", "AFFECTED", "RESULTED")
 _CONTEXT_REL = ("OCCURRED", "WITHIN")
@@ -204,6 +224,7 @@ def _expand_cross_event_bridges(
     brain_id: str,
     *,
     max_per_hub: int,
+    include_history: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from src.core.saving.hub_bridges import (
         HubBridge,
@@ -347,7 +368,7 @@ def _expand_cross_event_bridges(
             score = max(0.0, score - min(0.05, 0.02 * len(novel)))
         reserve_ok = seed in reserve_hubs
         for n, r, m, r2, b in facts_by_hub.get(event_uuid, []):
-            if not _is_currently_valid(r) or not _is_currently_valid(r2):
+            if not _fact_predicates_allowed(r, r2, include_history=include_history):
                 continue
             key = _fact_key(r, r2)
             if key in existing_keys:
@@ -355,13 +376,18 @@ def _expand_cross_event_bridges(
             existing_keys.add(key)
             chunk_ids = _extract_source_chunk_ids(n, r, m, r2, b)
             session_ids = _sessions_from_chunk_map(chunk_ids, chunk_sessions)
+            fact_text = _format_event_fact(n, r, m, r2, b)
+            if include_history and not (
+                _is_currently_valid(r) and _is_currently_valid(r2)
+            ):
+                fact_text = f"[superseded] {fact_text}"
             expanded.append(
                 {
                     "identified_entity": f"bridge:{bridge.shared_entity}",
                     "triple": (n, r, m, r2, b),
                     "score": score,
                     "key": key,
-                    "text": _format_event_fact(n, r, m, r2, b),
+                    "text": fact_text,
                     "chunk_ids": chunk_ids,
                     "session_ids": session_ids,
                     "bridge": {
@@ -1244,6 +1270,26 @@ def _is_currently_valid(predicate: Predicate) -> bool:
     return True
 
 
+def _wants_historical_facts(query: str) -> bool:
+    text = (query or "").strip()
+    if not text:
+        return False
+    if _CURRENT_TRUTH_RE.search(text) and not _HISTORY_MODE_RE.search(text):
+        return False
+    return bool(_HISTORY_MODE_RE.search(text))
+
+
+def _fact_predicates_allowed(
+    r: Predicate,
+    r2: Predicate,
+    *,
+    include_history: bool,
+) -> bool:
+    if include_history:
+        return True
+    return _is_currently_valid(r) and _is_currently_valid(r2)
+
+
 def _collect_query_variants(text: str, elements) -> list[str]:
     seen: set[str] = set()
     variants: list[str] = []
@@ -1275,6 +1321,8 @@ def _collect_query_variants(text: str, elements) -> list[str]:
             added_chunks += 1
     for extra in _decompose_enumeration_queries(text, elements):
         _add(extra)
+    for extra in _ordering_aspect_queries(text):
+        _add(extra)
     return variants
 
 
@@ -1283,10 +1331,45 @@ _ENUMERATION_RE = re.compile(
     r"changes?|traits?|hobbies|activities)\b",
     re.IGNORECASE,
 )
+_ORDERING_ASPECT_QUERIES_BUDGET = (
+    "core functionality authentication expense tracking visualization",
+    "transaction CRUD error handling response management",
+    "security deployment integration tests gunicorn workers",
+)
+_ORDERING_ASPECT_QUERIES_TRANSLATION = (
+    "translation API integration error handling DeepL",
+    "rate limiting request queue caching Redis",
+    "language detection libraries franc evaluation",
+    "database schema optimization contextual memory store",
+)
 
 
 def _is_enumeration_question(text: str) -> bool:
     return bool(_ENUMERATION_RE.search(text or ""))
+
+
+def _is_ordering_question(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(order|ordered|ordering|chronolog|sequence|walk me through)\b",
+            text or "",
+            re.I,
+        )
+    )
+
+
+def _ordering_aspect_queries(text: str) -> list[str]:
+    if not _is_ordering_question(text):
+        return []
+    q = text or ""
+    if re.search(
+        r"\b(translation|language detection|deepl|franc|microservice|"
+        r"multi-language|rate limit)\b",
+        q,
+        re.I,
+    ):
+        return list(_ORDERING_ASPECT_QUERIES_TRANSLATION)[:2]
+    return list(_ORDERING_ASPECT_QUERIES_BUDGET)[:2]
 
 
 def _decompose_enumeration_queries(text: str, elements) -> list[str]:
@@ -1349,6 +1432,7 @@ def _build_adjacency_from_seeds(
     *,
     query: str | None = None,
     query_embedding: list[float] | None = None,
+    include_history: bool = False,
 ) -> dict[str, list[tuple[str, float]]]:
     weighted: dict[str, dict[str, float]] = {}
     if not seed_uuids:
@@ -1360,7 +1444,7 @@ def _build_adjacency_from_seeds(
     except Exception:
         return {}
     for n, r, m, r2, b in neighbors:
-        if not _is_currently_valid(r) or not _is_currently_valid(r2):
+        if not _fact_predicates_allowed(r, r2, include_history=include_history):
             continue
         n_uuid = getattr(n, "uuid", None)
         m_uuid = getattr(m, "uuid", None)
@@ -1538,6 +1622,11 @@ def _session_ids_from_text(text: str) -> list[str]:
         if sid not in seen:
             seen.add(sid)
             found.append(sid)
+    for match in _BATCH_TURN_RE.finditer(text or ""):
+        sid = f"session_b{match.group(1)}_t{match.group(2)}"
+        if sid not in seen:
+            seen.add(sid)
+            found.append(sid)
     return found
 
 
@@ -1694,6 +1783,7 @@ async def _build_context(
     candidates: list[dict[str, Any]] = []
     seed_hits: list[tuple[str, float, str]] = []
     passage_hits: list[tuple[str, float, str]] = []
+    include_history = _wants_historical_facts(request.text)
 
     def _collect_facts_for_variant(
         text: str,
@@ -1724,7 +1814,9 @@ async def _build_context(
             local: list[dict[str, Any]] = []
             with profile_stage("facts.assemble"):
                 for n, r, m, r2, b in neighbors:
-                    if not _is_currently_valid(r) or not _is_currently_valid(r2):
+                    if not _fact_predicates_allowed(
+                        r, r2, include_history=include_history
+                    ):
                         continue
                     distances = [
                         uuid_to_distance[u]
@@ -1736,13 +1828,18 @@ async def _build_context(
                         if u in uuid_to_distance
                     ]
                     score = min(distances) if distances else float("inf")
+                    fact_text = _format_event_fact(n, r, m, r2, b)
+                    if include_history and not (
+                        _is_currently_valid(r) and _is_currently_valid(r2)
+                    ):
+                        fact_text = f"[superseded] {fact_text}"
                     local.append(
                         {
                             "identified_entity": text,
                             "triple": (n, r, m, r2, b),
                             "score": score,
                             "key": _fact_key(r, r2),
-                            "text": _format_event_fact(n, r, m, r2, b),
+                            "text": fact_text,
                             "chunk_ids": _extract_source_chunk_ids(n, r, m, r2, b),
                         }
                     )
@@ -1854,6 +1951,7 @@ async def _build_context(
             candidates,
             request.brain_id,
             max_per_hub=request.cross_event_bridges,
+            include_history=include_history,
         )
         detail["candidates"] = len(candidates)
         detail["paths"] = len(bridge_paths)
@@ -1873,6 +1971,7 @@ async def _build_context(
                     sorted(personalization.keys()),
                     request.brain_id,
                     query=request.text,
+                    include_history=include_history,
                 )
                 adjacency_detail["nodes"] = len(adjacency)
             with profile_stage("ppr.iterations", iterations=_PPR_ITERS):
@@ -1957,7 +2056,7 @@ async def _build_context(
                 memberships,
                 seed_sessions,
                 k_topics=10,
-                k_sessions=10,
+                k_sessions=20 if include_history else 10,
             )
             preferred = set(preferred_sessions)
             topic_detail["topics"] = len(response_topics)

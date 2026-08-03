@@ -834,6 +834,51 @@ class PostgreSQLGraphStore:
             conn.commit()
         return len(bridges)
 
+    def delete_hub_bridges_for_entities(
+        self, brain_id: str, entity_uuids: list[str]
+    ) -> int:
+        unique = sorted({str(u) for u in entity_uuids if u})
+        if not unique:
+            return 0
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM kg_hub_bridges WHERE shared_entity = ANY(%s)",
+                    (unique,),
+                )
+                deleted = cur.rowcount or 0
+            conn.commit()
+        return int(deleted)
+
+    def upsert_hub_bridges(
+        self,
+        brain_id: str,
+        bridges: list[tuple[str, str, str, str, float]],
+    ) -> int:
+        if not bridges:
+            return 0
+        self._ensure_brain_schema(brain_id)
+        with self._connection(brain_id) as conn:
+            with conn.cursor() as cur:
+                for event_a, event_b, shared_entity, shared_name, weight in bridges:
+                    if not event_a or not event_b or event_a == event_b:
+                        continue
+                    a, b = (event_a, event_b) if event_a < event_b else (event_b, event_a)
+                    cur.execute(
+                        """
+                        INSERT INTO kg_hub_bridges
+                            (event_a, event_b, shared_entity, shared_entity_name, weight)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (event_a, event_b, shared_entity) DO UPDATE SET
+                            shared_entity_name = EXCLUDED.shared_entity_name,
+                            weight = EXCLUDED.weight
+                        """,
+                        (a, b, shared_entity, shared_name or "", float(weight)),
+                    )
+            conn.commit()
+        return len(bridges)
+
     def get_hub_bridges_for_events(
         self,
         brain_id: str,

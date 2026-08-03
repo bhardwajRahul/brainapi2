@@ -839,6 +839,14 @@ class GraphAdapter:
     def rebuild_hub_bridge_index(self, brain_id: str = "default") -> int:
         return self.graph.rebuild_hub_bridge_index(brain_id)
 
+    def refresh_hub_bridges_for_entities(
+        self, entity_uuids: list, brain_id: str = "default"
+    ) -> int:
+        refresh = getattr(self.graph, "refresh_hub_bridges_for_entities", None)
+        if refresh is None:
+            return self.rebuild_hub_bridge_index(brain_id)
+        return int(refresh(brain_id, list(entity_uuids or [])) or 0)
+
     def get_hub_bridges(
         self,
         event_uuids: list[str],
