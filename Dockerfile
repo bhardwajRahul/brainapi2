@@ -36,7 +36,8 @@ COPY src/ ./src/
 COPY scripts/preload_docker_models.py ./scripts/
 
 RUN --mount=type=secret,id=HF_TOKEN,required=false \
-    export HUGGING_FACE_HUB_TOKEN="$(cat /run/secrets/HF_TOKEN 2>/dev/null || true)" \
+    export HF_TOKEN="$(cat /run/secrets/HF_TOKEN 2>/dev/null || true)" \
+    && export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
     && /app/.venv/bin/python scripts/preload_docker_models.py \
     && rm -rf /root/.cache /tmp/*
 

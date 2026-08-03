@@ -44,6 +44,27 @@ class TestDockerfileSpacyModels(unittest.TestCase):
         self.assertIn("spacy download", preload)
         self.assertIn("src.constants.spacy_models", preload)
 
+    def test_preload_detects_wrapped_huggingface_rate_limits(self):
+        import scripts.preload_docker_models as preload
+
+        class FakeResponse:
+            status_code = 429
+            headers = {"Retry-After": "7"}
+
+        class HubError(Exception):
+            def __init__(self):
+                super().__init__("429 Client Error: Too Many Requests")
+                self.response = FakeResponse()
+
+        wrapped = OSError(
+            "We couldn't connect to 'https://huggingface.co' to load the files"
+        )
+        wrapped.__cause__ = HubError()
+
+        self.assertTrue(preload._is_rate_limited(wrapped))
+        self.assertTrue(preload._is_transient_hub_error(wrapped))
+        self.assertEqual(preload._retry_after_seconds(wrapped), 7.0)
+
     def test_chinese_uses_web_pipeline_name(self):
         from src.constants.spacy_models import SPACY_MODEL_NAMES
 
