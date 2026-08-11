@@ -220,7 +220,8 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
 | `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — the matching graph triples plus historical context                |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
-| `/retrieve/entity/synergies` | `GET`  | **Similar things** related to a given one — effectively a recommendation algorithm over the graph                |
+| `/retrieve/entity/synergies` | `GET`  | **Sibling entities** of the same type — shared event hubs + embedding similarity (`top_k`, `labels`, `polarity`) |
+| `/retrieve/recommend`        | `GET`/`POST` | **Train-free recommendations** — synergies plus asymmetric walks, multi-interest, optional attribute prefs |
 
 **Get context for a question:**
 
@@ -240,15 +241,23 @@ curl "http://localhost:8000/retrieve/entity/status?target=Emily" \
 # → { "exists": true, "node": {...}, "relationships": [...], "observations": [...] }
 ```
 
-**Find synergies (recommendations):**
+**Find synergies (same-type siblings):**
 
 ```sh
-curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101" \
+curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101&top_k=20" \
   -H "Authorization: Bearer $BRAINPAT_TOKEN"
-# → similar entities ranked by how strongly they connect to the target
+# → similar entities ranked by association_score
 ```
 
-These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [REST API Reference](https://brainapi.lumen-labs.ai/docs/rest).
+**Rank recommendations (product / next-item style):**
+
+```sh
+curl "http://localhost:8000/retrieve/recommend?target=u01&top_k=20&labels=PRODUCT&exclude_seen=true" \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN"
+# → ranked recommendations with channel provenance (synergy / asymmetric / multi_interest / …)
+```
+
+These cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [Docs v2](https://brainapi.lumen-labs.ai/docs/v2).
 
 ---
 
@@ -257,7 +266,7 @@ These three cover the most common needs, but there are more (`/retrieve/hops`, `
 Out of the box BrainAPI is a general-purpose understanding engine. **Plugins** let you reshape it into something far more specific — without forking the core. Because plugins can add routes, swap agent prompts, and register MCP tools, the same engine can become:
 
 - **A cheap semantic search engine** — extract entities once, then serve fast graph-backed search instead of paying for vector queries every time.
-- **A recommendation system** — build on `/retrieve/entity/synergies` and custom routes to surface related products, content or collaborators.
+- **A recommendation system** — use `/retrieve/recommend` (and `/retrieve/entity/synergies` for same-type siblings) or plugins like `features-rec` / `recsys-gnn`.
 - **A domain-specific extractor** — override the Scout/Architect prompts so the swarm understands your ontology (CRM, legal, medical, …).
 - **An agent toolset** — register custom MCP tools so any LLM runtime can read and write your brain.
 

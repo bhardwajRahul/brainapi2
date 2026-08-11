@@ -6,6 +6,8 @@ Standalone HTTP-only harnesses (no `src/` imports):
 | --- | --- | --- |
 | [LoCoMo](https://github.com/snap-research/LoCoMo) | `locomo/` | `./locomo.sh` |
 | [LongMemEval](https://github.com/xiaowu0162/LongMemEval) | `longmemeval/` | `./longmemeval.sh` |
+| [BEAM](https://github.com/mohammadtavakoli78/BEAM) | `beam/` | `./beam.sh` |
+| RecSys (train-free `/retrieve/recommend`) | `recsys/` | `./recsys.sh` |
 
 Shared setup: `requirements.txt`, `.env` (`BRAINPAT_TOKEN`, LLM keys). Results ledger: [`REPORTS.json`](REPORTS.json). Agent notes: [`AGENTS.md`](AGENTS.md).
 
@@ -219,11 +221,13 @@ Create a sibling package under `benchmarks/`:
 benchmarks/
   locomo/          # LoCoMo package
   longmemeval/     # LongMemEval package
+  beam/            # BEAM package
+  recsys/          # RecSys / recommend package
   yourbench/       # new package with its own cli / client / metrics
   requirements.txt # shared deps, or a per-bench requirements file
 ```
 
-Reuse patterns from `locomo/` / `longmemeval/`:
+Reuse patterns from `locomo/` / `longmemeval/` / `recsys/`:
 
 - HTTP-only `BrainAPIClient`
 - JSONL resume files under `runs/`
@@ -327,3 +331,34 @@ Do **not** ingest probing questions, rubrics, or ideal answers.
 
 **Cost warning:** even one 100K chat is ~100+ turns; start with `--limit-turns` / `--limit`.
 **1M wall time:** ~40h at concurrency 1; ~20–25h at 2 with healthy API (see `docs/research/10-beam-protocol.md`).
+
+---
+
+# RecSys benchmark for BrainAPI
+
+Held-out next-item HitRate/Recall@K against **train-free** `GET /retrieve/recommend` (default) or optional plugin LightGCN. Uses structured ingest into brain `demorecsys` only — never LoCoMo/BEAM brains.
+
+1. Optional MovieLens download (`ml-100k`) or toy JSONL fixtures under `data/`
+2. Maps interactions → `POST /ingest/structured` (`mode=deterministic`)
+3. Ranks with `GET /retrieve/recommend` (`--backend graph`) or LightGCN (`--backend lightgcn`)
+4. Scores HitRate@K / Recall@K (+ diversity); upserts only `benchmarks.recsys`
+
+Protocol: [`docs/research/16-recsys-eval-protocol.md`](../docs/research/16-recsys-eval-protocol.md).
+
+## Quickstart
+
+```bash
+./recsys.sh smoke --backend graph
+./recsys.sh download --name ml-100k
+./recsys.sh evaluate --backend graph --dataset data/movielens_100k.jsonl --max-users 50
+# attributed fixture (color/material):
+./recsys.sh evaluate --backend graph --dataset data/recsys_toy_attrs.jsonl --min-interactions 2
+# optional offline CF:
+./recsys.sh evaluate --backend lightgcn --dataset data/recsys_toy.jsonl --epochs 20
+```
+
+### Scoring
+
+- **Headline**: `hit_rate@K` / `recall@K` (K typically 10/20).
+- Also: intra-list diversity, type coverage; report `model=graph-recommend` or `lightgcn`.
+- Successful scored runs upsert `benchmarks.recsys` only — do not touch other suite keys.
