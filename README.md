@@ -120,12 +120,17 @@ make start-console-dev  # terminal 2 → http://localhost:5173/console/
 
 **Other handy targets:** `make start-api`, `make start-mcp`, `make stop-all`, and `make install-extras` (auto-installs heavy ML extras like local OCR based on your `.env`).
 
-**Docker only:**
+**Docker only** (pick a [deploy profile](deploy/README.md)):
 
 ```sh
-docker compose -f example-docker-compose.yaml up -d
-```
+# light — Postgres + DeepSeek + OpenAI embeddings
+cp deploy/env.light.example .env   # fill in secrets, then:
+docker compose -f deploy/docker-compose.light.yaml up -d
 
+# heavy — Neo4j + Milvus + Mongo + GCP/Azure (full resources)
+cp deploy/env.heavy.example .env
+docker compose -f deploy/docker-compose.heavy.yaml up -d
+```
 Then ingest your first data point:
 
 ```sh

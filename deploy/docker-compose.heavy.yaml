@@ -1,6 +1,6 @@
-# Legacy path — prefer deploy/ profiles for new installs:
-#   heavy → deploy/docker-compose.heavy.yaml + deploy/env.heavy.example
-#   light → deploy/docker-compose.light.yaml + deploy/env.light.example
+# BrainAPI deploy profile: heavy
+# Full stack (Redis + Neo4j + Milvus + Mongo + API/worker/MCP).
+# Pair with deploy/env.heavy.example → /root/.env
 # See deploy/README.md
 
 version: "3.8"
