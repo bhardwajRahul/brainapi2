@@ -18,6 +18,43 @@ brainapi start   # start docker compose services + run the API
 brainapi doctor  # check Python, Docker, Ollama, and configured services
 ```
 
+### Non-interactive / hybrid init
+
+Any value you pass as a flag skips that wizard prompt; everything else is still asked.
+
+```bash
+brainapi init \
+  --vector-db=postgresql \
+  --data-db=postgresql \
+  --graph-db=networkx \
+  --models-mode=remote \
+  --llm-small-provider=openai \
+  --llm-large-provider=openai \
+  --embeddings-provider=openai \
+  --openai-api-key=sk-... \
+  --llm-small=gpt-4o-mini \
+  --llm-large=gpt-4o \
+  --brainpat-token=brainpat_... \
+  --no-plugins \
+  --no-start-services
+```
+
+`brainapi --init ...` is an alias for `brainapi init ...`.
+
+| Flag group | Examples |
+| --- | --- |
+| Defaults / DBs | `--defaults`, `--vector-db`, `--data-db`, `--graph-db` |
+| Pipeline / runtime | `--ocr-mode`, `--services-runtime`, `--start-services`, `--no-start-services` |
+| Models | `--models-mode`, `--llm-small-provider`, `--llm-large-provider`, `--embeddings-provider`, `--llm-small`, `--llm-large`, `--embedding-model`, `--embedding-dimensions` |
+| Ollama | `--ollama-host`, `--ollama-port`, `--ollama-small`, `--ollama-large`, `--ollama-embeddings` |
+| GCP | `--gcp-credentials`, `--gcp-project`, `--gcp-small`, `--gcp-large`, `--gcp-embedding` |
+| Azure | `--azure-endpoint`, `--azure-api-version`, `--azure-key`, `--azure-small`, `--azure-large`, `--azure-embedding-endpoint`, `--azure-embedding-key`, `--azure-embedding` |
+| OpenAI / Anthropic / DeepSeek | `--openai-api-key`, `--openai-base-url`, `--openai-small`, `--openai-large`, `--openai-embedding`, `--anthropic-api-key`, `--anthropic-small`, `--anthropic-large`, `--deepseek-api-key`, `--deepseek-small`, `--deepseek-large` |
+| Bedrock | `--aws-region`, `--aws-access-key-id`, `--aws-secret-access-key`, `--aws-session-token`, `--bedrock-small`, `--bedrock-large`, `--bedrock-embedding` |
+| Connections | `--redis-host`, `--redis-port`, `--postgres-*`, `--neo4j-*`, `--milvus-*`, `--mongo-*` |
+| Auth / plugins | `--brainpat-token`, `--plugin <name[@version]>` (repeatable), `--no-plugins` |
+
+If any config flag is present (or `--defaults`), the “Use default settings?” question is skipped.
 ## Commands
 
 | Command           | Description                                                                                        |

@@ -7,6 +7,9 @@ interface AskPluginsOptions {
   allowBack?: boolean;
   backHint?: string;
   initial?: PluginChoice[];
+  /** When set, skip the interactive plugin search UI. */
+  prechosen?: PluginChoice[];
+  skip?: boolean;
 }
 
 function pluginLabel(plugin: {
@@ -22,6 +25,10 @@ function pluginLabel(plugin: {
 export async function askPlugins(
   opts: AskPluginsOptions = {},
 ): Promise<PluginChoice[] | typeof PROMPT_BACK> {
+  if (opts.skip || opts.prechosen !== undefined) {
+    return opts.prechosen ?? [];
+  }
+
   const selections = new Map<string, PluginChoice>();
   for (const plugin of opts.initial ?? []) {
     selections.set(`${plugin.source}:${plugin.name}:${plugin.path ?? ""}`, plugin);

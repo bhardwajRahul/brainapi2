@@ -8,6 +8,7 @@ import {
   OLLAMA_DEFAULT_SMALL_MODEL,
   EMBEDDINGS_DEFAULTS,
 } from "../constants.js";
+import type { InitFlagOverrides } from "../lib/init-flags.js";
 import {
   hasOllamaModel,
   isOllamaRunning,
@@ -106,54 +107,80 @@ async function askEmbeddingsLocal(defaultModel: string): Promise<string> {
   return raw.trim() || defaultModel;
 }
 
-export async function askOllama(): Promise<OllamaChoices> {
+export async function askOllama(
+  flags?: InitFlagOverrides,
+): Promise<OllamaChoices> {
   p.log.step("Configure Ollama");
 
-  const hostRaw = await askText({
-    message: "Ollama host",
-    placeholder: OLLAMA_DEFAULT_HOST,
-    defaultValue: OLLAMA_DEFAULT_HOST,
-  });
-  const portRaw = await askText({
-    message: "Ollama port",
-    placeholder: String(OLLAMA_DEFAULT_PORT),
-    defaultValue: String(OLLAMA_DEFAULT_PORT),
-    validate: (value) => {
-      const n = Number(value);
-      if (!Number.isInteger(n) || n <= 0 || n > 65535) return "Port must be 1-65535";
-      return undefined;
-    },
-  });
-  const target: OllamaTarget = {
-    host: hostRaw.trim() || OLLAMA_DEFAULT_HOST,
-    port: Number(portRaw) || OLLAMA_DEFAULT_PORT,
-  };
+  let host = flags?.ollamaHost;
+  if (host === undefined) {
+    const hostRaw = await askText({
+      message: "Ollama host",
+      placeholder: OLLAMA_DEFAULT_HOST,
+      defaultValue: OLLAMA_DEFAULT_HOST,
+    });
+    host = hostRaw.trim() || OLLAMA_DEFAULT_HOST;
+  }
+
+  let port = flags?.ollamaPort;
+  if (port === undefined) {
+    const portRaw = await askText({
+      message: "Ollama port",
+      placeholder: String(OLLAMA_DEFAULT_PORT),
+      defaultValue: String(OLLAMA_DEFAULT_PORT),
+      validate: (value) => {
+        const n = Number(value);
+        if (!Number.isInteger(n) || n <= 0 || n > 65535) return "Port must be 1-65535";
+        return undefined;
+      },
+    });
+    port = Number(portRaw) || OLLAMA_DEFAULT_PORT;
+  }
+
+  const target: OllamaTarget = { host, port };
 
   await waitForRunning(target);
 
-  const smallModelRaw = await askText({
-    message: "Small LLM model name (Ollama tag)",
-    placeholder: OLLAMA_DEFAULT_SMALL_MODEL,
-    defaultValue: OLLAMA_DEFAULT_SMALL_MODEL,
-  });
-  const smallModel = await waitForModel(
-    target,
-    smallModelRaw.trim() || OLLAMA_DEFAULT_SMALL_MODEL,
-    "small",
-  );
+  let smallModel =
+    flags?.ollamaSmall ?? flags?.llmSmall ?? OLLAMA_DEFAULT_SMALL_MODEL;
+  if (
+    flags?.ollamaSmall === undefined &&
+    flags?.llmSmall === undefined
+  ) {
+    const smallModelRaw = await askText({
+      message: "Small LLM model name (Ollama tag)",
+      placeholder: OLLAMA_DEFAULT_SMALL_MODEL,
+      defaultValue: OLLAMA_DEFAULT_SMALL_MODEL,
+    });
+    smallModel = smallModelRaw.trim() || OLLAMA_DEFAULT_SMALL_MODEL;
+  }
+  smallModel = await waitForModel(target, smallModel, "small");
 
-  const largeModelRaw = await askText({
-    message: "Large LLM model name (Ollama tag)",
-    placeholder: OLLAMA_DEFAULT_LARGE_MODEL,
-    defaultValue: OLLAMA_DEFAULT_LARGE_MODEL,
-  });
-  const largeModel = await waitForModel(
-    target,
-    largeModelRaw.trim() || OLLAMA_DEFAULT_LARGE_MODEL,
-    "large",
-  );
+  let largeModel =
+    flags?.ollamaLarge ?? flags?.llmLarge ?? OLLAMA_DEFAULT_LARGE_MODEL;
+  if (
+    flags?.ollamaLarge === undefined &&
+    flags?.llmLarge === undefined
+  ) {
+    const largeModelRaw = await askText({
+      message: "Large LLM model name (Ollama tag)",
+      placeholder: OLLAMA_DEFAULT_LARGE_MODEL,
+      defaultValue: OLLAMA_DEFAULT_LARGE_MODEL,
+    });
+    largeModel = largeModelRaw.trim() || OLLAMA_DEFAULT_LARGE_MODEL;
+  }
+  largeModel = await waitForModel(target, largeModel, "large");
 
-  const embeddingsLocalModel = await askEmbeddingsLocal(EMBEDDINGS_DEFAULTS.localModel);
+  let embeddingsLocalModel =
+    flags?.ollamaEmbeddings ??
+    flags?.embeddingModel ??
+    EMBEDDINGS_DEFAULTS.localModel;
+  if (
+    flags?.ollamaEmbeddings === undefined &&
+    flags?.embeddingModel === undefined
+  ) {
+    embeddingsLocalModel = await askEmbeddingsLocal(EMBEDDINGS_DEFAULTS.localModel);
+  }
 
   return {
     host: target.host,

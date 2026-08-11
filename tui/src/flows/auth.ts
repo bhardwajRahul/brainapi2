@@ -8,15 +8,24 @@ function generateToken(): string {
   return `brainpat_${randomBytes(24).toString("hex")}`;
 }
 
-export async function askAuth(opts?: { allowBack?: false }): Promise<AuthChoices>;
+export async function askAuth(opts?: {
+  allowBack?: false;
+  prechosenToken?: string;
+}): Promise<AuthChoices>;
 export async function askAuth(opts: {
   allowBack: true;
   backHint?: string;
+  prechosenToken?: string;
 }): Promise<AuthChoices | PromptBack>;
 export async function askAuth(opts?: {
   allowBack?: boolean;
   backHint?: string;
+  prechosenToken?: string;
 }): Promise<AuthChoices | PromptBack> {
+  if (opts?.prechosenToken) {
+    return { brainpatToken: opts.prechosenToken };
+  }
+
   p.log.step("Authentication token");
 
   const action = opts?.allowBack

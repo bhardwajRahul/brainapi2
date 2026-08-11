@@ -53,8 +53,13 @@ export async function askEmbeddingDimensions(
     allowBack?: boolean;
     backHint?: string;
     initial?: EmbeddingDimensions;
+    prechosenSize?: number;
   },
 ): Promise<EmbeddingDimensions | PromptBack> {
+  if (opts?.prechosenSize !== undefined) {
+    return dimensionsFromSize(opts.prechosenSize);
+  }
+
   p.log.step("Embedding dimensions");
   const known = lookupEmbeddingDimensions(embeddingModel);
   const initialSize =
@@ -132,6 +137,7 @@ export async function attachEmbeddingDimensions(
     allowBack?: boolean;
     backHint?: string;
     initial?: EmbeddingDimensions;
+    prechosenSize?: number;
   },
 ): Promise<ModelsChoices | PromptBack> {
   const embeddingModel = resolveActiveEmbeddingModel(models);

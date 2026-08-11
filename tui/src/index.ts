@@ -8,6 +8,10 @@ import { runUpdate } from "./commands/update.js";
 import { runPlugins, type PluginsOptions, type PluginsSubcommand } from "./commands/plugins.js";
 import { runReset, type ResetCommandOptions } from "./commands/reset.js";
 import { readState } from "./lib/state.js";
+import {
+  tryApplyInitFlag,
+  type InitFlagOverrides,
+} from "./lib/init-flags.js";
 import { isPipelineMode, type PipelineMode } from "./types.js";
 
 type Command =
@@ -34,6 +38,8 @@ interface ParsedArgs {
   invalidPipeline?: string;
   plugins?: PluginsOptions;
   reset?: ResetCommandOptions;
+  initFlags?: InitFlagOverrides;
+  initFlagError?: string;
   unknown: string[];
 }
 
@@ -54,6 +60,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let command: Command = "help";
   const unknown: string[] = [];
   const out: ParsedArgs = { command, unknown };
+  let initFlags: InitFlagOverrides | undefined;
 
   while (args.length > 0) {
     const arg = args.shift()!;
@@ -96,6 +103,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (arg === "--version" || arg === "-v") {
       printVersion();
       process.exit(0);
+    } else if (arg === "--init") {
+      out.command = "init";
     } else if (out.command === "help" && !arg.startsWith("-")) {
       switch (arg) {
         case "init":
@@ -110,6 +119,16 @@ function parseArgs(argv: string[]): ParsedArgs {
           break;
         default:
           unknown.push(arg);
+      }
+    } else if (out.command === "init") {
+      if (!initFlags) initFlags = {};
+      const result = tryApplyInitFlag(arg, args, initFlags);
+      if (result.kind === "error") {
+        out.initFlagError = result.error;
+        return out;
+      }
+      if (result.kind === "unknown") {
+        unknown.push(arg);
       }
     } else if (out.command === "reset") {
       if (!out.reset) out.reset = {};
@@ -156,6 +175,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       unknown.push(arg);
     }
   }
+
+  if (initFlags && Object.keys(initFlags).length > 0) {
+    out.initFlags = initFlags;
+  }
   return out;
 }
 
@@ -179,6 +202,7 @@ function printHelp(): void {
     "  -r, --repo <url>           Git repo to clone (default $BRAINAPI_REPO_URL or upstream)",
     "  -b, --branch <ref>         Branch to checkout (default $BRAINAPI_BRANCH or 'main')",
     "  -f, --force                Re-run init even if state exists",
+    "      --init                 Alias for the init command",
     "      --no-services          For 'start': skip bringing backing services up",
     "      --no-api               For 'start': skip the API server",
     "      --no-mcp               For 'start': skip the MCP server",
@@ -193,6 +217,13 @@ function printHelp(): void {
     "  -y, --yes                  For 'reset': skip confirmation prompt",
     "  -v, --version              Print the CLI version",
     "  -h, --help                 Show this message",
+    "",
+    pc.bold("Init flags:") + " " + pc.dim("(provided values skip that wizard prompt)"),
+    "  --defaults                 Use default DB stack (Postgres + pgvector + NetworkX)",
+    "  --vector-db|--data-db|--graph-db|--ocr-mode|--services-runtime",
+    "  --models-mode|--llm-*-provider|--llm-small|--llm-large|--embedding-model",
+    "  --start-services|--no-start-services|--brainpat-token|--plugin|--no-plugins",
+    "  …plus connection + provider credential flags (see README)",
     "",
     pc.dim("Environment overrides: BRAINAPI_HOME, BRAINAPI_REPO_URL, BRAINAPI_BRANCH"),
   ];
@@ -215,6 +246,10 @@ async function autoInitIfNeeded(command: Command): Promise<Command> {
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.initFlagError) {
+    p.log.error(parsed.initFlagError);
+    process.exit(1);
+  }
   if (parsed.invalidPipeline !== undefined) {
     p.log.error(
       `Invalid --pipeline value "${parsed.invalidPipeline}". Use accurate or lightweight.`,
@@ -244,6 +279,7 @@ async function main(): Promise<void> {
           repoUrl: parsed.repo,
           branch: parsed.branch,
           force: parsed.force,
+          flags: parsed.initFlags,
         });
         return;
       case "start": {

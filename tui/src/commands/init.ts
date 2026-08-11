@@ -26,6 +26,10 @@ import { bringUpServices, bringUpServicesManually } from "../lib/bring-up.js";
 import { targetFromConnections } from "../lib/service-target.js";
 import { askConfirm } from "../lib/prompts.js";
 import { installLocalPlugin, installRegistryPlugin } from "../lib/plugins.js";
+import {
+  hasConfigOverrides,
+  type InitFlagOverrides,
+} from "../lib/init-flags.js";
 import type {
   Connections,
   DbChoices,
@@ -39,6 +43,7 @@ export interface InitOptions {
   repoUrl?: string;
   branch?: string;
   force?: boolean;
+  flags?: InitFlagOverrides;
 }
 
 function intro(): void {
@@ -117,12 +122,13 @@ async function installPhase(extras: string[]): Promise<void> {
   p.log.success("Dependencies installed");
 }
 
-async function configurePhase(): Promise<InitChoices> {
+async function configurePhase(flags?: InitFlagOverrides): Promise<InitChoices> {
   const draft: SetupDraft = {};
   await runSetupWizard(draft, {
     firstStepBack: "cancel",
     firstStepBackHint: "Cancel setup",
     stepBackHint: "Previous step",
+    flags,
   });
   return toInitChoices(draft);
 }
@@ -131,6 +137,7 @@ async function servicesPhase(
   dbs: DbChoices,
   connections: Connections,
   runtime: ServicesRuntime,
+  startServices?: boolean,
 ): Promise<void> {
   const services = pickedServices(dbs);
   const items = services.map((service) => ({
@@ -149,10 +156,20 @@ async function servicesPhase(
     return;
   }
 
-  const startNow = await askConfirm({
-    message: "Start docker compose containers now for the services you picked?",
-    initialValue: true,
-  });
+  let startNow: boolean;
+  if (startServices !== undefined) {
+    startNow = startServices;
+    p.log.info(
+      startNow
+        ? "Starting docker compose containers (--start-services)."
+        : "Skipping docker compose containers (--no-start-services).",
+    );
+  } else {
+    startNow = await askConfirm({
+      message: "Start docker compose containers now for the services you picked?",
+      initialValue: true,
+    });
+  }
   if (!startNow) {
     p.log.info(
       "Skipping. Start them later with " +
@@ -221,6 +238,10 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     await writeState(defaultState());
   }
 
+  if (opts.flags && hasConfigOverrides(opts.flags)) {
+    p.log.info("Using CLI flags for setup — skipping prompts for provided values.");
+  }
+
   let python = await ensurePython();
   await clonePhase(opts);
 
@@ -232,7 +253,7 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
 
   await ensureVenv(python.bin);
 
-  const choices = await configurePhase();
+  const choices = await configurePhase(opts.flags);
   const extras = [
     ...ocrToExtras(choices.pipeline.ocrMode),
     ...postgresBackendExtras(choices.dbs),
@@ -250,6 +271,7 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     choices.dbs,
     choices.connections,
     choices.servicesRuntime,
+    opts.flags?.startServices,
   );
 
   outro();

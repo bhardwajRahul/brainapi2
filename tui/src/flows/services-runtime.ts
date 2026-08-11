@@ -20,7 +20,11 @@ function nonRedisPicked(dbs: DbChoices): string[] {
 
 export async function askServicesRuntime(
   dbs: DbChoices,
-  opts?: { allowBack?: false; initialValue?: ServicesRuntime },
+  opts?: {
+    allowBack?: false;
+    initialValue?: ServicesRuntime;
+    prechosen?: ServicesRuntime;
+  },
 ): Promise<ServicesRuntime>;
 export async function askServicesRuntime(
   dbs: DbChoices,
@@ -28,6 +32,7 @@ export async function askServicesRuntime(
     allowBack: true;
     backHint?: string;
     initialValue?: ServicesRuntime;
+    prechosen?: ServicesRuntime;
   },
 ): Promise<ServicesRuntime | PromptBack>;
 export async function askServicesRuntime(
@@ -36,8 +41,13 @@ export async function askServicesRuntime(
     allowBack?: boolean;
     backHint?: string;
     initialValue?: ServicesRuntime;
+    prechosen?: ServicesRuntime;
   },
 ): Promise<ServicesRuntime | PromptBack> {
+  if (opts?.prechosen) {
+    return opts.prechosen;
+  }
+
   const sidecars = ["Redis", ...nonRedisPicked(dbs)];
   p.note(
     [
