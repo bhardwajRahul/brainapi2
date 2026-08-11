@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-08-03T09:15:33.804119+00:00",
+  "updated_at": "2026-08-05T20:07:44.710028+00:00",
   "description": "BrainAPI benchmark results. Top published scores across suites. Updated when a suite evaluate/report completes successfully.",
   "benchmarks": {
     "locomo": {
@@ -782,6 +782,25 @@
           "git_sha": "78cbbae50ac37777ce0315f85156f7812b28248c",
           "report_path": "runs/beam-1m-1-clean-product/report.json",
           "recorded_at": "2026-08-03T06:59:14.016975+00:00"
+        }
+      ]
+    },
+    "recsys": {
+      "name": "RecSys (event-KG recommend)",
+      "leaderboard": [
+        {
+          "run_id": "recsys-20260805T200653Z",
+          "brain": "demorecsys",
+          "n_users": 20,
+          "hit_rate@10": 0.1,
+          "hit_rate@20": 0.1,
+          "recall@10": 0.1,
+          "recall@20": 0.1,
+          "mean_intra_list_diversity": 0.20536531279178338,
+          "mean_type_coverage": 2.0,
+          "git_sha": "cf61c99b809730cc9eb35db3532e018bdd038a55",
+          "report_path": "runs/recsys-20260805T200653Z/report.json",
+          "recorded_at": "2026-08-05T20:07:44.707984+00:00"
         }
       ]
     }

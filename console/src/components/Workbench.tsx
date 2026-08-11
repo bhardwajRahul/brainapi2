@@ -90,13 +90,7 @@ export function Workbench({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        className={
-          flush
-            ? "border-b border-lumen-border px-4 py-3 sm:px-6"
-            : "px-4 pt-6 sm:px-6"
-        }
-      >
+      <div className={"mb-4 px-4 pt-6 sm:px-6"}>
         <PageHeader className="sm:items-center">
           <PageHeaderContent>
             <PageHeaderTitle>{title}</PageHeaderTitle>
@@ -112,14 +106,14 @@ export function Workbench({
       <div
         className={
           flush
-            ? "flex min-h-0 flex-1"
+            ? "flex min-h-0 flex-1 px-4 pb-4 sm:px-6"
             : "mt-4 flex min-h-0 flex-1 gap-0 px-4 pb-6 sm:px-6"
         }
       >
         <div
           className={
             flush
-              ? "min-h-0 min-w-0 flex-1 overflow-auto"
+              ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
               : "min-h-0 min-w-0 flex-1 overflow-auto border border-lumen-border bg-lumen-surface"
           }
         >
@@ -185,7 +179,11 @@ export function JsonInspector({
   onClose: () => void;
 }) {
   return (
-    <DetailInspector title={title} subtitle={subtitle} onClose={onClose}>
+    <DetailInspector
+      title={title}
+      subtitle={subtitle}
+      onClose={onClose}
+    >
       <CodeBlock className="text-[11px] leading-relaxed">
         {JSON.stringify(value, null, 2)}
       </CodeBlock>

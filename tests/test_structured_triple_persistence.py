@@ -101,6 +101,7 @@ class StructuredTriplePersistenceTests(unittest.TestCase):
             "data": [_full_triple()],
             "brain_id": "tenant-a",
             "text": None,
+            "mode": "deterministic",
         }
 
         with (
@@ -110,6 +111,7 @@ class StructuredTriplePersistenceTests(unittest.TestCase):
             patch.object(ingestion_mod, "data_adapter") as data_adapter,
             patch.object(ingestion_mod, "ScoutAgent") as ScoutAgent,
             patch.object(ingestion_mod, "ArchitectAgent") as ArchitectAgent,
+            patch.object(ingestion_mod, "KGAgent") as KGAgent,
             patch("celery.chain", _immediate_chain_factory(persist_calls)),
             patch.object(ingestion_mod, "set_ingestion_task_status"),
             patch.object(ingestion_mod, "finalize_ingestion_task"),
@@ -122,6 +124,9 @@ class StructuredTriplePersistenceTests(unittest.TestCase):
             )
             ScoutAgent.side_effect = lambda **kwargs: scout_called.append(True)
             ArchitectAgent.side_effect = lambda **kwargs: architect_called.append(True)
+            KGAgent.side_effect = lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("KGAgent must not be constructed in deterministic mode")
+            )
 
             result = ingestion_mod.ingest_structured_data.run.__func__(
                 type("Bound", (), {"request": request})(),
@@ -134,12 +139,84 @@ class StructuredTriplePersistenceTests(unittest.TestCase):
         self.assertEqual(len(relationships), 2)
         self.assertEqual(relationships[0]["name"], "MADE")
         self.assertEqual(relationships[1]["name"], "TARGETED")
+        self.assertEqual(
+            relationships[0]["properties"].get("source"), "structured_deterministic"
+        )
         self.assertEqual(persist_calls[0]["brain_id"], "tenant-a")
         self.assertEqual(len(saved_structured), 1)
         self.assertEqual(saved_structured[0]["brain_id"], "tenant-a")
         self.assertEqual(saved_structured[0]["data"].id, "task-struct-1")
         self.assertEqual(scout_called, [])
         self.assertEqual(architect_called, [])
+
+    def test_deterministic_ignores_text_for_llm(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        request = MagicMock()
+        request.id = "task-struct-det-text"
+        persist_calls = []
+        scout_called = []
+
+        args = {
+            "data": [_full_triple()],
+            "brain_id": "recsys-demo",
+            "text": "should not trigger scout",
+            "mode": "deterministic",
+        }
+
+        with (
+            patch.object(ingestion_mod, "cache_adapter"),
+            patch.object(ingestion_mod, "graph_adapter"),
+            patch.object(ingestion_mod, "IngestionManager"),
+            patch.object(ingestion_mod, "data_adapter"),
+            patch.object(ingestion_mod, "ScoutAgent") as ScoutAgent,
+            patch.object(ingestion_mod, "ArchitectAgent"),
+            patch.object(ingestion_mod, "KGAgent"),
+            patch("celery.chain", _immediate_chain_factory(persist_calls)),
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+            patch.object(ingestion_mod, "finalize_ingestion_task"),
+        ):
+            ScoutAgent.side_effect = lambda **kwargs: scout_called.append(True)
+            ingestion_mod.ingest_structured_data.run.__func__(
+                type("Bound", (), {"request": request})(),
+                args,
+            )
+
+        self.assertEqual(scout_called, [])
+        self.assertEqual(len(persist_calls), 1)
+
+    def test_deterministic_fails_closed_on_unresolved_name_anchor(self):
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        request = MagicMock()
+        request.id = "task-struct-anchor-fail"
+        graph = MagicMock()
+        graph.get_by_identification_params.return_value = None
+
+        args = {
+            "data": [_full_triple()],
+            "brain_id": "recsys-demo",
+            "mode": "deterministic",
+            "anchor": {"name": "Alice", "type": "PERSON"},
+        }
+
+        with (
+            patch.object(ingestion_mod, "cache_adapter"),
+            patch.object(ingestion_mod, "graph_adapter", graph),
+            patch.object(ingestion_mod, "IngestionManager"),
+            patch.object(ingestion_mod, "data_adapter"),
+            patch.object(ingestion_mod, "KGAgent") as KGAgent,
+            patch.object(ingestion_mod, "set_ingestion_task_status"),
+        ):
+            KGAgent.side_effect = lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("KGAgent must not run in deterministic mode")
+            )
+            with self.assertRaises(ValueError) as ctx:
+                ingestion_mod.ingest_structured_data.run.__func__(
+                    type("Bound", (), {"request": request})(),
+                    args,
+                )
+        self.assertIn("deterministic mode", str(ctx.exception))
 
     def test_text_enrichment_does_not_repersist_submitted_triples(self):
         from src.core.agents.architect_agent import ArchitectAgentResponse
@@ -155,6 +232,7 @@ class StructuredTriplePersistenceTests(unittest.TestCase):
             "data": [_full_triple()],
             "brain_id": "tenant-a",
             "text": "Alice bought a widget",
+            "mode": "hybrid",
         }
 
         scout = MagicMock()
@@ -186,6 +264,32 @@ class StructuredTriplePersistenceTests(unittest.TestCase):
         self.assertEqual(len(persist_calls), 1)
         self.assertEqual(len(run_structured_kwargs), 1)
         self.assertFalse(run_structured_kwargs[0]["persist_submitted"])
+        for rel in persist_calls[0]["relationships"]:
+            self.assertEqual(rel["properties"].get("source"), "structured_deterministic")
+
+    def test_resolved_mode_inference(self):
+        from src.services.api.constants.requests import (
+            IngestionStructuredRequestBody,
+            IngestionTripleSet,
+        )
+
+        triple = IngestionTripleSet(**_full_triple())
+        self.assertEqual(
+            IngestionStructuredRequestBody(data=[triple]).resolved_mode(),
+            "deterministic",
+        )
+        self.assertEqual(
+            IngestionStructuredRequestBody(
+                data=[triple], text="x"
+            ).resolved_mode(),
+            "hybrid",
+        )
+        self.assertEqual(
+            IngestionStructuredRequestBody(
+                data=[triple], text="x", mode="deterministic"
+            ).resolved_mode(),
+            "deterministic",
+        )
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import numpy as np
 
 from src.adapters.interfaces.graph import PredicateWithFlowKey
-from src.constants.kg import EntitySynergy, Node
+from src.constants.kg import EntitySynergy, Node, Predicate
 from src.services.kg_agent.main import (
     embeddings_adapter,
     graph_adapter,
@@ -22,19 +22,55 @@ from src.utils.vector_search import VectorSearchFacade
 from src.utils.similarity.numbers import wmean, wsim
 from src.utils.similarity.vectors import cosine_similarity
 
-# Strengthen the similarity between target and neighbor nodes that are directly connected
 DIRECT_MULTIPLIER = 1.30
 
-# Lowers the similarity between target and neighbor nodes that connected by similar nodes but not directly connected
 REMOTE_MULTIPLIER = 0.70
 
-# Weight to strengthen the similarity by the more things in common between the neighbor and the target
 FACTORS_INCREMENTAL_WEIGHT = 0.3
 
-# Weight to strengthen the similarity by the comparison of the neighbor+target descriptions
 NODE_SIM_DESC_INCREMENTAL_WEIGHT = 0.5
 
+DEFAULT_TOP_K = 50
+
 vector_search = VectorSearchFacade(vector_store_adapter)
+
+
+def _predicate_currently_valid(predicate: Predicate) -> bool:
+    props = getattr(predicate, "properties", None) or {}
+    if props.get("invalid_at"):
+        return False
+    if getattr(predicate, "deprecated", False):
+        return False
+    return True
+
+
+def _normalize_polarity(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in ("positive", "negative", "neutral"):
+        return v
+    return None
+
+
+def polarity_matches(
+    target_polarity: Optional[str],
+    candidate_polarity: Optional[str],
+    mode: Literal["same", "opposite"],
+) -> bool:
+    """
+    same: matching polarities (None/neutral treated as compatible with each other).
+    opposite: positive↔negative only; neutral/None excluded from opposite matches.
+    """
+    tp = _normalize_polarity(target_polarity)
+    cp = _normalize_polarity(candidate_polarity)
+    if mode == "same":
+        if tp in (None, "neutral") and cp in (None, "neutral"):
+            return True
+        return tp == cp
+    if tp in (None, "neutral") or cp in (None, "neutral"):
+        return False
+    return {tp, cp} == {"positive", "negative"}
 
 
 class EntitySinergyRetriever:
@@ -54,25 +90,27 @@ class EntitySinergyRetriever:
         do: bool = False,
         pa: bool = False,
         ppa: bool = False,
-    ) -> Tuple[Node, List[EntitySynergy], List[Node], List[Node]]:
+        top_k: int = DEFAULT_TOP_K,
+        labels: Optional[List[str]] = None,
+    ) -> Tuple[Optional[Node], List[EntitySynergy], List[Node], List[Node]]:
         """
         Find related entities ("siblings") for a given target text by locating the target node and assembling EntitySynergy connections from its neighbors and embedding-based similarity.
 
-        This returns the resolved target graph node (or None if no matching node is found) and a list of EntitySynergy objects that represent related nodes discovered via neighbor relationships and vector-similarity matches. The method may return early with an empty list when required intermediate data (target node, similarity seeds, or similar nodes) is missing.
-
         Parameters:
             target: The text used to locate the target entity in the node store.
-            polarity: A directive indicating the type of relation to retrieve; expected values are "same" or "opposite".
+            polarity: "same" keeps candidates with matching node polarity; "opposite"
+                keeps positive↔negative pairs only.
             do: If True, only direct synergies are returned.
             pa: If True, potential anchors are returned.
-            ppa: If True, potential positive anchors are returned.
+            ppa: If True, anchors (seed nodes) are returned.
+            top_k: Maximum synergies to return (default 50).
+            labels: If set, only return candidates whose labels intersect this set.
 
         Returns:
-            (target_node, connections):
-                - target_node (Node or None): the graph node matching the provided target text, or `None` if not found.
-                - connections (List[EntitySynergy]): a list of EntitySynergy entries representing related entities; may be empty.
+            (target_node, connections, anchors, potential_anchors)
         """
 
+        label_filter = None
         _embedding_cache: Dict[Tuple[str, str], Optional[np.ndarray]] = {}
 
         def _get_first_embedding(ids: List[str], store: str):
@@ -98,6 +136,17 @@ class EntitySinergyRetriever:
             )
 
         def _upsert_connection(seed_node: Node, neighbor_node: Node, score: float):
+            if neighbor_node.uuid == target_node.uuid:
+                return
+            if label_filter is not None:
+                if not set(l.upper() for l in neighbor_node.labels).intersection(
+                    label_filter
+                ):
+                    return
+            if not polarity_matches(
+                target_node.polarity, neighbor_node.polarity, polarity
+            ):
+                return
             if neighbor_node.uuid not in positivep_connections:
                 positivep_connections[neighbor_node.uuid] = EntitySynergy(
                     node=neighbor_node,
@@ -122,6 +171,8 @@ class EntitySinergyRetriever:
         def _collect_seed_nodes_for_neighbor(neighbor):
             seed_nodes_for_neighbor = []
             target_embeddings = []
+            if not _predicate_currently_valid(neighbor[0]):
+                return None, None
             neighbor_embeddings = _get_first_embedding(
                 [neighbor[0].properties.get("v_id")],
                 store="relationships",
@@ -201,7 +252,9 @@ class EntitySinergyRetriever:
                 brain_id=self.brain_id,
             )
             edges_map = {
-                edge[0].uuid: edge[0] for edge in _neighbors_event_edges[seed_node.uuid]
+                edge[0].uuid: edge[0]
+                for edge in _neighbors_event_edges[seed_node.uuid]
+                if _predicate_currently_valid(edge[0])
             }
             _neighbors_event = graph_adapter.get_nexts_by_flow_key(
                 [
@@ -231,6 +284,8 @@ class EntitySinergyRetriever:
                             if neighbor_node_vid:
                                 node_ids_to_fetch.append(neighbor_node_vid)
             for dn in _neighbors_direct[seed_node.uuid]:
+                if not _predicate_currently_valid(dn[0]):
+                    continue
                 if dn[1].uuid != target_node.uuid:
                     n_vid = dn[0].properties.get("v_id")
                     if n_vid:
@@ -318,6 +373,8 @@ class EntitySinergyRetriever:
                         )
 
             for dn in _neighbors_direct[seed_node.uuid]:
+                if not _predicate_currently_valid(dn[0]):
+                    continue
                 if dn[1].uuid != target_node.uuid:
                     n_vid = dn[0].properties.get("v_id")
                     tn_score = None
@@ -375,10 +432,15 @@ class EntitySinergyRetriever:
         _neighbors = graph_adapter.get_neighbors(
             [target_node_id], brain_id=self.brain_id
         )
-        neighbors = _neighbors[target_node_id]
+        neighbors = [
+            n for n in _neighbors[target_node_id] if _predicate_currently_valid(n[0])
+        ]
 
         positivep_connections: Dict[str, EntitySynergy] = {}
         seen_set = set([target_node.uuid])
+        label_filter = (
+            {l.upper() for l in labels} if labels else None
+        )
 
         all_seed_nodes: List[Node] = []
         all_similar_seeds: List[Node] = []
@@ -434,13 +496,15 @@ class EntitySinergyRetriever:
                         )
 
         unique_seeds = {n.uuid: n for n in all_seed_nodes}
+        ranked = sorted(
+            positivep_connections.values(),
+            key=lambda x: x.association_score,
+            reverse=True,
+        )
+        limit = max(0, int(top_k)) if top_k is not None else DEFAULT_TOP_K
         return (
             target_node,
-            sorted(
-                positivep_connections.values(),
-                key=lambda x: x.association_score,
-                reverse=True,
-            ),
+            ranked[:limit],
             list(unique_seeds.values()),
             all_similar_seeds,
         )

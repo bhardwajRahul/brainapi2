@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.14.3--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.15.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/license-PolyForm%20Small%20Business-blue?style=for-the-badge" alt="License"/>
 </p>
@@ -131,6 +131,7 @@ docker compose -f deploy/docker-compose.light.yaml up -d
 cp deploy/env.heavy.example .env
 docker compose -f deploy/docker-compose.heavy.yaml up -d
 ```
+
 Then ingest your first data point:
 
 ```sh

@@ -16,6 +16,7 @@ from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
     GetContextRequestBody,
     GetContextResponse,
+    RecommendRequestBody,
     RetrieveNeighborsAiModeRequestBody,
     RetrieveNeighborsWithIdentificationParamsRequestBody,
     RetrieveRequestResponse,
@@ -53,6 +54,7 @@ from src.services.api.controllers.entities import (
     get_entity_context as get_entity_context_controller,
     get_entity_sibilings as get_entity_sibilings_controller,
     get_entity_status as get_entity_status_controller,
+    get_recommendations as get_recommendations_controller,
 )
 from src.services.api.controllers.vectors import (
     get_vector_stores as get_vector_stores_controller,
@@ -505,24 +507,90 @@ async def get_entity_synergies(
     do: bool = False,
     pa: bool = False,
     ppa: bool = False,
+    top_k: int = 50,
+    labels: Optional[List[str]] = None,
     brain_id: str = Depends(get_brain_id),
 ):
     """
     Retrieve synergies for a specified entity.
 
     Parameters:
-        target (str): Identifier or name of the target entity.
-        polarity (Literal["same", "opposite"]): Which type of synergies to return: "same" for similar/aligned synergies, "opposite" for contrasting/opposing synergies.
-        brain_id (str): Identifier of the knowledge brain to query.
-        do (bool): If True, only direct synergies are returned.
-        pa (bool): If True, potential anchors are returned.
-        ppa (bool): If True, potential positive anchors are returned.
+        target: Identifier or name of the target entity.
+        polarity: "same" for matching node polarity; "opposite" for positive↔negative.
+        do: If True, only direct synergies are returned.
+        pa: If True, potential anchors are returned.
+        ppa: If True, seed anchors are returned.
+        top_k: Maximum synergies to return (default 50).
+        labels: Optional candidate label filter.
+        brain_id: Identifier of the knowledge brain to query.
 
     Returns:
-        list: A list of synergy records for the target entity matching the requested polarity.
+        Synergy records for the target entity matching the requested polarity.
     """
     return await get_entity_sibilings_controller(
-        target, polarity, do, pa, ppa, brain_id
+        target, polarity, do, pa, ppa, top_k, labels, brain_id
+    )
+
+
+@retrieve_router.get(path="/recommend")
+async def get_recommend(
+    target: str,
+    polarity: Literal["same", "opposite"] = "same",
+    top_k: int = 20,
+    labels: Optional[List[str]] = None,
+    include_asymmetric: bool = True,
+    include_multi_interest: bool = True,
+    include_attribute_pref: bool = False,
+    diversify: bool = True,
+    asymmetric_direction: Literal["outbound", "inbound", "both"] = "outbound",
+    exclude_seen: bool = False,
+    recency_half_life_days: Optional[float] = None,
+    dampen_degree: bool = False,
+    brain_id: str = Depends(get_brain_id),
+):
+    """
+    Ranked event-graph recommendations composing synergies, asymmetric
+    complementary walks, multi-interest medoids, and optional attribute
+    preferences (retrieval-time only; no training).
+    """
+    return await get_recommendations_controller(
+        target,
+        polarity,
+        top_k,
+        labels,
+        include_asymmetric,
+        include_multi_interest,
+        diversify,
+        asymmetric_direction,
+        brain_id,
+        exclude_seen,
+        recency_half_life_days,
+        dampen_degree,
+        include_attribute_pref,
+        None,
+    )
+
+
+@retrieve_router.post(path="/recommend")
+async def post_recommend(
+    body: RecommendRequestBody,
+    brain_id: str = Depends(get_brain_id),
+):
+    return await get_recommendations_controller(
+        body.target,
+        body.polarity,
+        body.top_k,
+        body.labels,
+        body.include_asymmetric,
+        body.include_multi_interest,
+        body.diversify,
+        body.asymmetric_direction,
+        brain_id or body.brain_id,
+        body.exclude_seen,
+        body.recency_half_life_days,
+        body.dampen_degree,
+        body.include_attribute_pref,
+        body.behavior_weights,
     )
 
 

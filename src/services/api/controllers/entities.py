@@ -9,7 +9,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from starlette.responses import JSONResponse
 from src.core.search.entity_context import EntityContext
@@ -19,8 +19,11 @@ from src.services.api.constants.requests import (
     GetEntityContextResponse,
     GetEntitySibilingsResponse,
     GetEntityStatusResponse,
+    RecommendItem,
+    RecommendResponse,
 )
 from src.core.search.entity_sibilings import EntitySinergyRetriever
+from src.core.search.recommend import EntityRecommendRetriever
 from src.services.data.main import data_adapter
 from src.services.input.agents import embeddings_adapter
 from src.services.kg_agent.main import graph_adapter, vector_store_adapter
@@ -86,23 +89,29 @@ async def get_entity_sibilings(
     do: bool = False,
     pa: bool = False,
     ppa: bool = False,
+    top_k: int = 50,
+    labels: Optional[List[str]] = None,
     brain_id: str = "default",
 ) -> GetEntitySibilingsResponse:
     """
     Retrieve sibling entities (synergies) for a target entity.
 
     Parameters:
-        polarity (Literal["same", "opposite"]): Which polarity of siblings to return — "same" for similar entities, "opposite" for contrasted entities.
-        do (bool): If True, only direct synergies are returned.
-        pa (bool): If True, potential anchors are returned.
-        ppa (bool): If True, potential positive anchors are returned.
+        polarity: "same" for matching node polarity; "opposite" for positive↔negative.
+        do: If True, only direct synergies are returned.
+        pa: If True, potential anchors are returned.
+        ppa: If True, seed anchors are returned.
+        top_k: Max synergies to return.
+        labels: Optional label filter for candidates.
 
     Returns:
         GetEntitySibilingsResponse: Object containing the resolved target node and its list of synergies.
     """
     entity_sibilings = EntitySinergyRetriever(brain_id)
     target_node, synergies, seed_nodes, potential_anchors = (
-        entity_sibilings.retrieve_sibilings(target, polarity, do, pa, ppa)
+        entity_sibilings.retrieve_sibilings(
+            target, polarity, do, pa, ppa, top_k=top_k, labels=labels
+        )
     )
     if target_node is None:
         return JSONResponse(
@@ -128,6 +137,60 @@ async def get_entity_sibilings(
                 else {}
             ),
         }
+    )
+
+
+async def get_recommendations(
+    target: str,
+    polarity: Literal["same", "opposite"] = "same",
+    top_k: int = 20,
+    labels: Optional[List[str]] = None,
+    include_asymmetric: bool = True,
+    include_multi_interest: bool = True,
+    diversify: bool = True,
+    asymmetric_direction: Literal["outbound", "inbound", "both"] = "outbound",
+    brain_id: str = "default",
+    exclude_seen: bool = False,
+    recency_half_life_days: Optional[float] = None,
+    dampen_degree: bool = False,
+    include_attribute_pref: bool = False,
+    behavior_weights: Optional[dict] = None,
+) -> RecommendResponse:
+    retriever = EntityRecommendRetriever(brain_id)
+    target_node, recommendations = retriever.recommend(
+        target,
+        polarity=polarity,
+        top_k=top_k,
+        labels=labels,
+        include_asymmetric=include_asymmetric,
+        include_multi_interest=include_multi_interest,
+        include_attribute_pref=include_attribute_pref,
+        diversify=diversify,
+        asymmetric_direction=asymmetric_direction,
+        exclude_seen=exclude_seen,
+        recency_half_life_days=recency_half_life_days,
+        dampen_degree=dampen_degree,
+        behavior_weights=behavior_weights,
+    )
+    if target_node is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "No entity found matching the target."},
+        )
+    items = [
+        RecommendItem(
+            node=r["node"],
+            score=r["score"],
+            connected_by=r["connected_by"],
+            channel=r["channel"],
+        )
+        for r in recommendations
+    ]
+    return JSONResponse(
+        content=RecommendResponse(
+            target_node=target_node,
+            recommendations=items,
+        ).model_dump(mode="json")
     )
 
 

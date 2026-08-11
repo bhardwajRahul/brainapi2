@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Button,
+  ChoiceField,
+  ChoiceFieldLabel,
   CodeBlock,
   NumberInput,
+  Switch,
   Tag,
   Toolbar,
   ToolbarGroup,
@@ -18,6 +21,7 @@ import {
   getGraphTone,
   type GraphFilterState,
   type GraphNode,
+  type GraphPerformanceOptions,
   type GraphPropertyValue,
   type GraphRelationship as LumenRelationship,
   type GraphSelection,
@@ -70,7 +74,7 @@ function toPropertyValue(value: unknown): GraphPropertyValue | undefined {
         item === null ||
         typeof item === "string" ||
         typeof item === "number" ||
-        typeof item === "boolean",
+        typeof item === "boolean"
     );
     return scalars;
   }
@@ -78,7 +82,7 @@ function toPropertyValue(value: unknown): GraphPropertyValue | undefined {
 }
 
 function toLumenProperties(
-  properties?: Record<string, unknown>,
+  properties?: Record<string, unknown>
 ): Record<string, GraphPropertyValue> | undefined {
   if (!properties) return undefined;
   const next: Record<string, GraphPropertyValue> = {};
@@ -103,7 +107,7 @@ function entityToNode(entity: GraphEntity): GraphNode {
 
 function relationshipToLumen(
   rel: GraphRelationship,
-  index: number,
+  index: number
 ): LumenRelationship {
   const type = rel.predicate.name || "RELATED";
   return {
@@ -120,7 +124,7 @@ function relationshipToLumen(
 
 function mergeEntities(
   current: GraphEntity[],
-  incoming: GraphEntity[],
+  incoming: GraphEntity[]
 ): GraphEntity[] {
   const map = new Map(current.map((e) => [e.uuid, e]));
   for (const e of incoming) map.set(e.uuid, e);
@@ -129,13 +133,13 @@ function mergeEntities(
 
 function mergeRelationships(
   current: GraphRelationship[],
-  incoming: GraphRelationship[],
+  incoming: GraphRelationship[]
 ): GraphRelationship[] {
   const map = new Map(
     current.map((r) => [
       `${r.subject.uuid}-${r.object.uuid}-${r.predicate.name}`,
       r,
-    ]),
+    ])
   );
   for (const r of incoming) {
     map.set(`${r.subject.uuid}-${r.object.uuid}-${r.predicate.name}`, r);
@@ -147,7 +151,7 @@ function applyGraphFilters(
   rels: GraphRelationship[],
   entities: GraphEntity[],
   label: string,
-  query: string,
+  query: string
 ): GraphRelationship[] {
   const hasFilters = !!(label || query);
   if (!hasFilters) return rels;
@@ -155,7 +159,7 @@ function applyGraphFilters(
   if (label && query) {
     return filterRelationshipsByQuery(
       filterRelationshipsByLabel(rels, label),
-      query,
+      query
     );
   }
   if (label) {
@@ -169,7 +173,7 @@ function applyGraphFilters(
 
 function asEntityOrFallback(
   value: GraphEntity | null | undefined,
-  fallback: GraphEntity | null,
+  fallback: GraphEntity | null
 ): GraphEntity {
   if (value?.uuid) return value;
   if (fallback) return fallback;
@@ -185,10 +189,16 @@ export default function GraphPage() {
   const [expanding, setExpanding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [physicsEnabled, setPhysicsEnabled] = useState(true);
+  const [groupingEnabled, setGroupingEnabled] = useState(true);
   const [filterState, setFilterState] =
     useState<GraphFilterState>(EMPTY_FILTERS);
   const [selection, setSelection] = useState<GraphSelection>(null);
   const activeBrainId = getSession()?.brainId ?? "default";
+
+  const performance = useMemo<GraphPerformanceOptions | false | undefined>(
+    () => (groupingEnabled ? undefined : { clustering: false }),
+    [groupingEnabled]
+  );
 
   const loadGraph = useCallback(async (nextLimit: number) => {
     const applied = clampLimit(nextLimit);
@@ -204,7 +214,7 @@ export default function GraphPage() {
 
       const [relRes] = await Promise.all([
         apiFetch<{ relationships: unknown[]; total?: number }>(
-          `/retrieve/relationships?${relParams}`,
+          `/retrieve/relationships?${relParams}`
         ),
       ]);
 
@@ -214,10 +224,10 @@ export default function GraphPage() {
 
       if (merged.entities.length === 0) {
         const fallback = await apiFetch<{ entities: GraphEntity[] }>(
-          `/retrieve/entities?limit=${applied}&skip=0`,
+          `/retrieve/entities?limit=${applied}&skip=0`
         );
         setEntities(
-          mergeGraphData(fallback.entities ?? [], normalizedRels).entities,
+          mergeGraphData(fallback.entities ?? [], normalizedRels).entities
         );
         setRelationships(normalizedRels);
       } else {
@@ -245,7 +255,7 @@ export default function GraphPage() {
   const nodes = useMemo(() => entities.map(entityToNode), [entities]);
   const lumenRelationships = useMemo(
     () => relationships.map(relationshipToLumen),
-    [relationships],
+    [relationships]
   );
 
   const entityById = useMemo(() => {
@@ -260,7 +270,7 @@ export default function GraphPage() {
         main_node: GraphEntity;
         neighbors?: NeighborEntry[];
       }>(
-        `/retrieve/entities/neighbors?uuid=${encodeURIComponent(center.uuid)}&limit=40`,
+        `/retrieve/entities/neighbors?uuid=${encodeURIComponent(center.uuid)}&limit=40`
       );
 
       const centerNode = asEntityOrFallback(res.main_node, center);
@@ -302,7 +312,7 @@ export default function GraphPage() {
           <Toolbar
             aria-label="Graph load controls"
             density="compact"
-            className="items-center"
+            className="w-full items-center px-4"
           >
             <ToolbarLabel id="graph-load-limit-label">Load limit</ToolbarLabel>
             <ToolbarGroup
@@ -324,7 +334,10 @@ export default function GraphPage() {
               ))}
             </ToolbarGroup>
             <ToolbarSeparator />
-            <ToolbarGroup aria-label="Custom load limit" className="items-center">
+            <ToolbarGroup
+              aria-label="Custom load limit"
+              className="items-center"
+            >
               <ToolbarItem className="flex items-center">
                 <NumberInput
                   id="graph-custom-limit"
@@ -340,8 +353,29 @@ export default function GraphPage() {
                 />
               </ToolbarItem>
             </ToolbarGroup>
+            <ToolbarSeparator />
+            <ToolbarGroup
+              aria-label="Display options"
+              className="items-center"
+            >
+              <ToolbarItem className="flex items-center">
+                <ChoiceField className="items-center gap-2">
+                  <Switch
+                    id="graph-node-grouping"
+                    checked={groupingEnabled}
+                    onChange={(e) => setGroupingEnabled(e.target.checked)}
+                  />
+                  <ChoiceFieldLabel htmlFor="graph-node-grouping">
+                    Group nodes
+                  </ChoiceFieldLabel>
+                </ChoiceField>
+              </ToolbarItem>
+            </ToolbarGroup>
             <ToolbarSpacer />
-            <ToolbarGroup aria-label="Load actions" className="items-center">
+            <ToolbarGroup
+              aria-label="Load actions"
+              className="items-center"
+            >
               <ToolbarItem>
                 <Button
                   type="button"
@@ -368,7 +402,10 @@ export default function GraphPage() {
             </ToolbarGroup>
           </Toolbar>
           {error ? (
-            <Alert variant="danger" title="Failed to load graph">
+            <Alert
+              variant="danger"
+              title="Failed to load graph"
+            >
               {error}
             </Alert>
           ) : null}
@@ -376,11 +413,11 @@ export default function GraphPage() {
       }
     >
       {loading ? (
-        <div className="flex h-full min-h-[28rem] items-center justify-center text-lumen-muted-foreground">
+        <div className="flex min-h-0 flex-1 items-center justify-center text-lumen-muted-foreground">
           Loading graph…
         </div>
       ) : nodes.length === 0 ? (
-        <div className="p-6">
+        <div className="flex min-h-0 flex-1 items-start p-6">
           <Alert title="No nodes in this brain">
             Active brain: {activeBrainId}
             {activeBrainId === "default"
@@ -391,7 +428,7 @@ export default function GraphPage() {
       ) : (
         <GraphExplorer
           ariaLabel="Knowledge graph explorer"
-          className="h-full min-h-[32rem]"
+          className="graph-explorer--fill min-h-0 flex-1"
           nodes={nodes}
           relationships={lumenRelationships}
           filterState={filterState}
@@ -400,12 +437,20 @@ export default function GraphPage() {
           onSelectionChange={setSelection}
           physicsEnabled={physicsEnabled}
           onPhysicsEnabledChange={setPhysicsEnabled}
+          performance={performance}
           renderInspector={(context) => {
             if (context.selection.kind !== "node") {
-              return <GraphInspector {...context} onClose={context.close} />;
+              return (
+                <GraphInspector
+                  {...context}
+                  onClose={context.close}
+                />
+              );
             }
             const entity = entityById.get(context.selection.id);
-            const node = context.nodes.find((n) => n.id === context.selection.id);
+            const node = context.nodes.find(
+              (n) => n.id === context.selection.id
+            );
             return (
               <aside className="flex h-full flex-col gap-3 overflow-auto border-l border-lumen-border p-4">
                 <div className="flex items-start justify-between gap-2">

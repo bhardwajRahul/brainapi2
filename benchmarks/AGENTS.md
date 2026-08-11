@@ -7,8 +7,9 @@
 | **LoCoMo** | `benchmarks/locomo/` | `./locomo.sh` | `benchmarks.locomo` |
 | **LongMemEval** | `benchmarks/longmemeval/` | `./longmemeval.sh` | `benchmarks.longmemeval` |
 | **BEAM** | `benchmarks/beam/` | `./beam.sh` | `benchmarks.beam` |
+| **RecSys** | `benchmarks/recsys/` | `./recsys.sh` | `benchmarks.recsys` |
 
-All harnesses talk to a running BrainAPI over HTTP only (no `src/` imports).
+All harnesses talk to a running BrainAPI over HTTP only (no `src/` imports). RecSys uses `POST /ingest/structured` (KB write) + **train-free** `GET /retrieve/recommend` on brain **`demorecsys` only** — never LoCoMo/BEAM brains. Optional: `plugins/features-rec` for attribute prefs; `plugins/recsys-gnn` LightGCN via `--backend lightgcn`.
 
 ### LoCoMo
 
@@ -17,6 +18,22 @@ Typical flow: `download` → `ingest` → `evaluate` → `report` via `./locomo.
 ### LongMemEval
 
 Typical flow: `download` → `ingest` → `evaluate` → `report` via `./longmemeval.sh` or `.venv/bin/python -m longmemeval`. Protocol: `docs/research/09-longmemeval-protocol.md`.
+
+### RecSys
+
+Held-out next-item HitRate/Recall@K via **train-free graph recommend** (default) or optional plugin LightGCN. Flow: `download` (optional MovieLens) → structured ingest → `GET /retrieve/recommend` via `./recsys.sh --backend graph`. Brain: `demorecsys`.
+
+```bash
+./recsys.sh smoke --backend graph
+./recsys.sh download --name ml-100k
+./recsys.sh evaluate --backend graph --dataset data/movielens_100k.jsonl --max-users 50
+# attributed fixture (color/material):
+./recsys.sh evaluate --backend graph --dataset data/recsys_toy_attrs.jsonl --min-interactions 2
+# optional offline CF:
+./recsys.sh evaluate --backend lightgcn --dataset data/recsys_toy.jsonl --epochs 20
+```
+
+Protocol: [`docs/research/16-recsys-eval-protocol.md`](../docs/research/16-recsys-eval-protocol.md). Upserts only `benchmarks.recsys` — never wipe or write to `beam1m1clean` / `locomoconv26*`.
 
 ### BEAM
 
@@ -37,6 +54,7 @@ Typical flow: `download` → `ingest` → `evaluate` → `report` via `./beam.sh
 
 - LoCoMo harness upserts `benchmarks.locomo` via `write_report` → `update_reports_json` when report `status` is `ok`.
 - BEAM harness upserts `benchmarks.beam` the same way (field: `headline_score`, continuous `[0,1]`).
+- RecSys harness upserts `benchmarks.recsys` only (`hit_rate@K` / `recall@K`); it must not touch other suite keys.
 - After any completed evaluate/report that produces a successful scored run, ensure the suite entry in `REPORTS.json` reflects it.
 - If you write or patch `runs/<id>/report.json` manually, update `REPORTS.json` yourself (same schema; upsert by `run_id` under the suite).
 - When adding a new suite, add a `benchmarks.<suite_id>` key (`name` + `leaderboard`) and upsert the same way.

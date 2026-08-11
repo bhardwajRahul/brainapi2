@@ -8,7 +8,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 -----
 """
 
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
@@ -162,6 +162,16 @@ class IngestionStructuredRequestBody(BaseModel):
         default=None,
         description="Additional text context for the structured data.",
     )
+    mode: Optional[Literal["deterministic", "hybrid", "enrich"]] = Field(
+        default=None,
+        description=(
+            "Ingest mode. deterministic: no LLM (triples only; UUID anchor or "
+            "exact name+type match). hybrid: persist submitted triples then "
+            "optionally enrich from text. enrich: same as hybrid with LLM "
+            "backfill. When omitted, inferred as hybrid if text is set else "
+            "deterministic."
+        ),
+    )
     brain_id: str = Field(
         default="default", description="The brain identifier to store the data in."
     )
@@ -174,6 +184,11 @@ class IngestionStructuredRequestBody(BaseModel):
                 "Anchor must be an object with uuid or name+type, not a string."
             )
         return value
+
+    def resolved_mode(self) -> Literal["deterministic", "hybrid", "enrich"]:
+        if self.mode is not None:
+            return self.mode
+        return "hybrid" if self.text else "deterministic"
 
 
 class RetrieveRequestResponse(BaseModel):
@@ -375,6 +390,37 @@ class GetEntitySibilingsResponse(BaseModel):
     synergies: List[EntitySynergy]
     anchors: Optional[List[Node]] = None
     potential_anchors: Optional[List[Node]] = None
+
+
+class RecommendRequestBody(BaseModel):
+    """Request body for event-graph recommendations."""
+
+    target: str
+    brain_id: str = "default"
+    polarity: Literal["same", "opposite"] = "same"
+    top_k: int = Field(20, ge=1, le=200)
+    labels: Optional[List[str]] = None
+    include_asymmetric: bool = True
+    include_multi_interest: bool = True
+    include_attribute_pref: bool = False
+    diversify: bool = True
+    asymmetric_direction: Literal["outbound", "inbound", "both"] = "outbound"
+    exclude_seen: bool = False
+    recency_half_life_days: Optional[float] = Field(None, ge=0)
+    dampen_degree: bool = False
+    behavior_weights: Optional[Dict[str, float]] = None
+
+
+class RecommendItem(BaseModel):
+    node: Node
+    score: float
+    connected_by: List[Node]
+    channel: str
+
+
+class RecommendResponse(BaseModel):
+    target_node: Node
+    recommendations: List[RecommendItem]
 
 
 class GetEntityStatusResponse(BaseModel):

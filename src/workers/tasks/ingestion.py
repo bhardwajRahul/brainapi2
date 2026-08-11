@@ -1192,14 +1192,32 @@ def ingest_structured_data(self, args: dict):
     payload = None
     try:
         payload = IngestionStructuredRequestBody(**args)
+        mode = payload.resolved_mode()
 
         set_ingestion_task_status(
             self.request.id,
             payload.brain_id,
             "started",
             stage="source",
-            counts={"triples": len(payload.data)},
+            counts={"triples": len(payload.data), "mode": mode},
         )
+
+        if mode == "deterministic" and payload.anchor is not None:
+            if not payload.anchor.uuid and not (
+                payload.anchor.name and payload.anchor.type
+            ):
+                error = (
+                    "deterministic mode requires anchor.uuid or exact name+type; "
+                    "LLM entity verification is not allowed"
+                )
+                set_ingestion_task_status(
+                    self.request.id,
+                    payload.brain_id,
+                    "failed",
+                    stage="anchor",
+                    error=error,
+                )
+                raise ValueError(error)
 
         anchor = None
         ingestion_manager = IngestionManager(
@@ -1231,6 +1249,20 @@ def ingest_structured_data(self, args: dict):
                 entity_types=[payload.anchor.type] if payload.anchor.type else None,
             )
             if not anchor:
+                if mode == "deterministic":
+                    error = (
+                        "deterministic mode: anchor not found by exact name+type; "
+                        "provide anchor.uuid or create the node first "
+                        "(LLM verify_entity_existence is disabled)"
+                    )
+                    set_ingestion_task_status(
+                        self.request.id,
+                        payload.brain_id,
+                        "failed",
+                        stage="anchor",
+                        error=error,
+                    )
+                    raise ValueError(error)
                 txt = (
                     payload.anchor.name + "; " + (payload.anchor.meta_description or "")
                 )
@@ -1291,6 +1323,7 @@ def ingest_structured_data(self, args: dict):
                 data={
                     "triples": [t.model_dump(mode="json") for t in payload.data],
                     "text": payload.text,
+                    "mode": mode,
                     "anchor": (
                         payload.anchor.model_dump(mode="json")
                         if payload.anchor
@@ -1298,7 +1331,7 @@ def ingest_structured_data(self, args: dict):
                     ),
                 },
                 types=["ingestion_structured"],
-                metadata={"task_id": self.request.id},
+                metadata={"task_id": self.request.id, "mode": mode},
                 brain_version=BRAIN_VERSION,
             ),
             brain_id=payload.brain_id,
@@ -1317,12 +1350,20 @@ def ingest_structured_data(self, args: dict):
         required_relationships, _ = ingestion_triples_to_relationships(
             current_triples, partial_triples
         )
+        for rel in required_relationships:
+            props = dict(rel.properties or {})
+            props.setdefault("source", "structured_deterministic")
+            rel.properties = props
         persistence_batches = [
             rel.model_dump(mode="json") for rel in required_relationships
         ]
         session_id = None
 
-        if payload.text:
+        run_llm_enrichment = mode in ("hybrid", "enrich") and bool(payload.text)
+        if mode == "deterministic":
+            run_llm_enrichment = False
+
+        if run_llm_enrichment:
             scout_agent = ScoutAgent(
                 llm_adapter=llm_small_adapter,
                 cache_adapter=cache_adapter,
@@ -1361,6 +1402,10 @@ def ingest_structured_data(self, args: dict):
             )
             enrichment = architect_agent.take_pending_relationships()
             session_id = architect_agent.session_id
+            for rel in enrichment:
+                props = dict(rel.properties or {})
+                props["source"] = "llm_enrichment"
+                rel.properties = props
             persistence_batches.extend(
                 rel.model_dump(mode="json") for rel in enrichment
             )

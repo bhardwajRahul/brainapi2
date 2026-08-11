@@ -33,3 +33,34 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
+
+.graph-explorer--fill {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.graph-explorer--fill .graph-filter-region {
+  width: 100%;
+  min-width: 0;
+}
+
+.graph-explorer--fill .graph-filter-toolbar {
+  width: 100%;
+  min-width: 0;
+}
+
+.graph-explorer--fill .graph-explorer__body {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.graph-explorer--fill .graph-canvas {
+  width: 100%;
+  height: 100%;
+}
