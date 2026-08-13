@@ -2,7 +2,7 @@
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
   <img src="https://img.shields.io/badge/version-2.17.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
-  <img src="https://img.shields.io/badge/license-PolyForm%20Small%20Business-blue?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/badge/license-BUSL--1.1-blue?style=for-the-badge" alt="License"/>
 </p>
 
 <h1 align="center">🧠 BrainAPI</h1>
@@ -382,11 +382,11 @@ print(result.triples)        # the graph path used to derive it
 
 ## 📄 License
 
-This project is licensed under the **[PolyForm Small Business License 1.0.0](LICENSE)**.
+This project is licensed under the **[Business Source License 1.1](LICENSE)**.
 
-- **Free for small businesses** — use, modify, self-host, and embed in closed-source products if your company has fewer than **100** employees/contractors and less than **~$1M USD** annual revenue (2019 CPI-adjusted).
-- **No copyleft** — your application stays proprietary.
-- **Commercial license required** for larger organizations or use outside these terms.
+- **Free for non-production use** — copy, modify, redistribute, and run BrainAPI for development, evaluation, and other non-production purposes.
+- **Production use requires a commercial license** — including self-host, sidecar, and running BrainAPI on your own cloud as part of a live product or service.
+- **This version becomes Apache 2.0 on 13 August 2030.** After that date, this release is under the [Apache License, Version 2.0](licenses/Apache-2.0.txt) and production use of *this* version is free. Later releases keep their own BSL terms until their Change Date.
 
 Contact [hello@lumen-labs.ai](mailto:hello@lumen-labs.ai) for a commercial license.
 
