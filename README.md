@@ -63,11 +63,11 @@ That trace is the difference. Not a nearest-neighbour guess — a **reasoned, wa
 
 ## 🏃 Quickstart (fastest way to run it)
 
-The quickest way to get BrainAPI running is the **`brainapi` TUI** — an interactive CLI that clones the project, sets up a Python environment, walks you through configuration, starts the backing services, and launches everything for you. Pick the defaults and you'll be up in a few minutes.
+The quickest way to get BrainAPI running is the **`brainapi` TUI** — a CLI that clones the project, sets up a Python environment, configures services, starts backing services, and launches everything for you. Run the interactive wizard, or pass flags to skip prompts (hybrid / non-interactive).
 
 ```sh
 npm install -g brainapi-tui
-brainapi init     # clone, install deps, interactive setup → choose "Use default settings"
+brainapi init     # clone, install deps, setup wizard (or pass flags to skip prompts)
 brainapi start    # backing services + API + MCP + worker + console
 ```
 
@@ -83,7 +83,7 @@ Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's i
 
 | Command           | What it does                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------- |
-| `brainapi init`   | Clone the repo into `~/.brainapi/source/`, create a venv, run the setup wizard              |
+| `brainapi init`   | Clone into `~/.brainapi/source/`, create a venv, run setup (flags skip individual prompts)  |
 | `brainapi start`  | Bring up backing services and run the API, MCP server, and Celery worker (Ctrl-C stops all) |
 | `brainapi config` | Re-open the setup wizard to change one area (databases, models, pipeline, plugins, …)       |
 | `brainapi doctor` | Check Python, Docker, Ollama, cloud credentials, and configured services                    |
@@ -91,7 +91,7 @@ Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's i
 
 Running any command (except `help`) before `init` will run `init` first automatically.
 
-**Useful `brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
+**Useful `brainapi init` flags:** `--defaults`, `--vector-db`, `--models-mode`, provider keys/models, `--brainpat-token`, `--no-plugins`, `--no-start-services` (any passed value skips that wizard prompt). **`brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
 
 > The TUI installs into `~/.brainapi/` (source, venv, `.env`, and `state.json`) — separate from any git clone. Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`.
 
