@@ -55,11 +55,12 @@ brainapi init \
 | Auth / plugins | `--brainpat-token`, `--plugin <name[@version]>` (repeatable), `--no-plugins` |
 
 If any config flag is present (or `--defaults`), the “Use default settings?” question is skipped.
+
 ## Commands
 
 | Command           | Description                                                                                        |
 | ----------------- | -------------------------------------------------------------------------------------------------- |
-| `brainapi init`   | Full bootstrap: clone the repo, create a Python venv, install deps, and run the interactive setup. |
+| `brainapi init`   | Full bootstrap: clone the repo, create a venv, install deps, and run setup (flags skip prompts).   |
 | `brainapi start`  | Start docker compose containers for the chosen services and launch the API.                        |
 | `brainapi config` | Re-run the interactive flow and rewrite `.env`.                                                    |
 | `brainapi doctor` | Check that Python, Docker, Ollama, GCP credentials, and configured services are reachable.         |
@@ -87,7 +88,7 @@ If any config flag is present (or `--defaults`), the “Use default settings?”
 
 ## Configuration
 
-The interactive flow asks:
+The interactive flow asks (any matching CLI flag skips that prompt):
 
 1. Use default settings? (NetworkX + Postgres + pgvector + remote GCP Vertex)
 2. Otherwise: Vector DB → Data DB → Graph DB → Models mode

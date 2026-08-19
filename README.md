@@ -1,8 +1,8 @@
 <p align="center">
   <a href="https://discord.gg/VTngQTaeDf"><img src="https://img.shields.io/badge/Discord-Join%20Lumen%20Brain-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
-  <img src="https://img.shields.io/badge/version-2.15.0--dev-blue?style=for-the-badge" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-2.17.0--dev-blue?style=for-the-badge" alt="Version"/>
   <img src="https://img.shields.io/badge/python-3.11+-green?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
-  <img src="https://img.shields.io/badge/license-PolyForm%20Small%20Business-blue?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/badge/license-BUSL--1.1-blue?style=for-the-badge" alt="License"/>
 </p>
 
 <h1 align="center">🧠 BrainAPI</h1>
@@ -63,11 +63,11 @@ That trace is the difference. Not a nearest-neighbour guess — a **reasoned, wa
 
 ## 🏃 Quickstart (fastest way to run it)
 
-The quickest way to get BrainAPI running is the **`brainapi` TUI** — an interactive CLI that clones the project, sets up a Python environment, walks you through configuration, starts the backing services, and launches everything for you. Pick the defaults and you'll be up in a few minutes.
+The quickest way to get BrainAPI running is the **`brainapi` TUI** — a CLI that clones the project, sets up a Python environment, configures services, starts backing services, and launches everything for you. Run the interactive wizard, or pass flags to skip prompts (hybrid / non-interactive).
 
 ```sh
 npm install -g brainapi-tui
-brainapi init     # clone, install deps, interactive setup → choose "Use default settings"
+brainapi init     # clone, install deps, setup wizard (or pass flags to skip prompts)
 brainapi start    # backing services + API + MCP + worker + console
 ```
 
@@ -83,7 +83,7 @@ Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's i
 
 | Command           | What it does                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------- |
-| `brainapi init`   | Clone the repo into `~/.brainapi/source/`, create a venv, run the setup wizard              |
+| `brainapi init`   | Clone into `~/.brainapi/source/`, create a venv, run setup (flags skip individual prompts)  |
 | `brainapi start`  | Bring up backing services and run the API, MCP server, and Celery worker (Ctrl-C stops all) |
 | `brainapi config` | Re-open the setup wizard to change one area (databases, models, pipeline, plugins, …)       |
 | `brainapi doctor` | Check Python, Docker, Ollama, cloud credentials, and configured services                    |
@@ -91,7 +91,7 @@ Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's i
 
 Running any command (except `help`) before `init` will run `init` first automatically.
 
-**Useful `brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
+**Useful `brainapi init` flags:** `--defaults`, `--vector-db`, `--models-mode`, provider keys/models, `--brainpat-token`, `--no-plugins`, `--no-start-services` (any passed value skips that wizard prompt). **`brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
 
 > The TUI installs into `~/.brainapi/` (source, venv, `.env`, and `state.json`) — separate from any git clone. Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`.
 
@@ -218,7 +218,7 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 
 | Endpoint                     | Method | What you get                                                                                                     |
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — the matching graph triples plus historical context                |
+| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — graph triples, passages, historical context, and optional provenance |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
 | `/retrieve/entity/synergies` | `GET`  | **Sibling entities** of the same type — shared event hubs + embedding similarity (`top_k`, `labels`, `polarity`) |
 | `/retrieve/recommend`        | `GET`/`POST` | **Train-free recommendations** — synergies plus asymmetric walks, multi-interest, optional attribute prefs |
@@ -230,7 +230,8 @@ curl -X POST http://localhost:8000/retrieve/context \
   -H "Authorization: Bearer $BRAINPAT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "Who organized AI events in London in March 2024?", "brain_id": "default"}'
-# → text_context + triples (the graph path) + historical_context
+# → text_context + triples + historical_context + source_passages
+#    (optional: graph_session_ids, topics, paths; tune with max_facts / max_passages)
 ```
 
 **Check if an entity exists:**
@@ -249,6 +250,7 @@ curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%2
 # → similar entities ranked by association_score
 ```
 
+
 **Rank recommendations (product / next-item style):**
 
 ```sh
@@ -257,7 +259,8 @@ curl "http://localhost:8000/retrieve/recommend?target=u01&top_k=20&labels=PRODUC
 # → ranked recommendations with channel provenance (synergy / asymmetric / multi_interest / …)
 ```
 
-These cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [Docs v2](https://brainapi.lumen-labs.ai/docs/v2).
+
+These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Start with [Context retrieval](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) and the [docs hub](https://brainapi.lumen-labs.ai/docs/v2).
 
 ---
 
@@ -350,7 +353,7 @@ print(result.text_context)   # the answer
 print(result.triples)        # the graph path used to derive it
 ```
 
-> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/rest) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
+> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/v2) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
 
 ---
 
@@ -370,9 +373,9 @@ print(result.triples)        # the graph path used to derive it
 | ---------------------- | ------------------------------------------------------------------------------------------------ |
 | 🖥️ Local CLI (TUI)     | [`tui/README.md`](tui/README.md) — `npm install -g brainapi-tui`                                 |
 | 📖 Documentation       | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
-| ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/quickstart](https://brainapi.lumen-labs.ai/docs/quickstart)         |
+| ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
 | 🔌 Plugin Registry     | [registry.brain-api.dev/app](https://registry.brain-api.dev/app)                                 |
-| 🛠️ REST API Reference  | [brainapi.lumen-labs.ai/docs/rest](https://brainapi.lumen-labs.ai/docs/rest)                     |
+| 🛠️ Context API         | [brainapi.lumen-labs.ai/docs/v2/retrieval/context](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) |
 | 🐍 Python SDK (PyPI)   | [pypi.org/project/lumen_brain](https://pypi.org/project/lumen_brain/)                            |
 | 📦 Node.js SDK (npm)   | [npmjs.com/package/@lumenlabs/lumen-brain](https://www.npmjs.com/package/@lumenlabs/lumen-brain) |
 | 💬 Community & Support | [Discord](https://discord.gg/VTngQTaeDf)                                                         |
@@ -391,11 +394,11 @@ print(result.triples)        # the graph path used to derive it
 
 ## 📄 License
 
-This project is licensed under the **[PolyForm Small Business License 1.0.0](LICENSE)**.
+This project is licensed under the **[Business Source License 1.1](LICENSE)**.
 
-- **Free for small businesses** — use, modify, self-host, and embed in closed-source products if your company has fewer than **100** employees/contractors and less than **~$1M USD** annual revenue (2019 CPI-adjusted).
-- **No copyleft** — your application stays proprietary.
-- **Commercial license required** for larger organizations or use outside these terms.
+- **Free for non-production use** — copy, modify, redistribute, and run BrainAPI for development, evaluation, and other non-production purposes.
+- **Production use requires a commercial license** — including self-host, sidecar, and running BrainAPI on your own cloud as part of a live product or service.
+- **This version becomes Apache 2.0 on 13 August 2030.** After that date, this release is under the [Apache License, Version 2.0](licenses/Apache-2.0.txt) and production use of *this* version is free. Later releases keep their own BSL terms until their Change Date.
 
 Contact [hello@lumen-labs.ai](mailto:hello@lumen-labs.ai) for a commercial license.
 
