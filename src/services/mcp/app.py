@@ -12,8 +12,6 @@ from starlette.routing import Mount, Route
 _project_root = Path(__file__).resolve().parent.parent.parent.parent
 dotenv.load_dotenv(_project_root / ".env")
 
-from contextlib import asynccontextmanager
-
 from src.lib.tracing.middleware import TraceMiddleware
 from src.lib.tracing.runtime import start_runtime_monitoring, stop_runtime_monitoring
 from src.services.mcp.main import auth_token_var, mcp, oauth_provider
@@ -157,12 +155,6 @@ async def _mcp_info(_request):
         body["oauth"] = True
         body["oauth_consent_path"] = "/mcp-oauth/consent"
     return JSONResponse(body, status_code=200)
-
-
-@asynccontextmanager
-async def _lifespan(app):
-    async with _mcp_app.router.lifespan_context(_mcp_app):
-        yield
 
 
 _custom_routes = [
