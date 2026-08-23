@@ -109,10 +109,10 @@ def validate_search_config(
         )
     if not enabled:
         return
-    if (data_db or "").strip().lower() != "postgresql":
+    if use_bm25 and (data_db or "").strip().lower() != "postgresql":
         raise ValueError(
-            "SEARCH_ENABLED=true requires DATA_DB=postgresql "
-            "(v1 BM25 indexes are Postgres-only)."
+            "SEARCH_USE_BM25=true requires DATA_DB=postgresql "
+            "(BM25 indexes are Postgres-only)."
         )
     if not use_dense and not use_bm25:
         raise ValueError(

@@ -51,7 +51,7 @@ class SearchConfigValidationTests(unittest.TestCase):
             bm25_b=0.75,
         )
 
-    def test_enabled_requires_postgres_data_db(self):
+    def test_bm25_requires_postgres_data_db(self):
         with self.assertRaises(ValueError) as ctx:
             validate_search_config(
                 enabled=True,
@@ -62,6 +62,16 @@ class SearchConfigValidationTests(unittest.TestCase):
                 bm25_b=0.75,
             )
         self.assertIn("DATA_DB=postgresql", str(ctx.exception))
+
+    def test_dense_only_search_supports_non_postgres_data_db(self):
+        validate_search_config(
+            enabled=True,
+            use_dense=True,
+            use_bm25=False,
+            data_db="mongo",
+            bm25_k1=1.2,
+            bm25_b=0.75,
+        )
 
     def test_enabled_requires_at_least_one_channel(self):
         with self.assertRaises(ValueError) as ctx:

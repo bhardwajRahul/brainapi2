@@ -210,7 +210,7 @@ BrainAPI follows an **append-only philosophy**: nothing is deleted from the grap
 - **`accurate`** (default) — the full swarm runs: Scout extracts every entity, the Observations agent writes notes, and the Janitor validates and deduplicates the Architect's relationships.
 - **`lightweight`** — a faster, cheaper path that extracts only the most important entities and skips the heavier validation steps. Switch with `--pipeline lightweight` or `PIPELINE_MODE` in `.env`.
 
-Search (`GET|POST /retrieve/search`) is **off by default**. Set `SEARCH_ENABLED=true` (requires `DATA_DB=postgresql`) to register the hit-list API, write BM25 `tsvector` indexes, and use halfvec HNSW when embeddings are >2000-d. Default retrieval is both channels fused (`SEARCH_FUSION=rrf`). The search p50 SLO is **< 200 ms excluding `embed.query`** — ask for `profile_stages` to split embed RTT from retrieve. `/retrieve/context` stays dense ∪ ILIKE unless search is on and `CONTEXT_PASSAGE_MODE` is `hybrid` / `bm25` / `dense`.
+Search (`GET|POST /retrieve/search`) is **off by default**. Set `SEARCH_ENABLED=true` to register the hit-list API. BM25 requires `DATA_DB=postgresql`; dense-only search (`SEARCH_USE_BM25=false`) is supported by either production profile. PostgreSQL writes BM25 `tsvector` indexes and uses halfvec HNSW when embeddings are >2000-d. Default light-profile retrieval is both channels fused (`SEARCH_FUSION=rrf`). The search p50 SLO is **< 200 ms excluding `embed.query`** — ask for `profile_stages` to split embed RTT from retrieve. `/retrieve/context` stays dense ∪ ILIKE unless search is on and `CONTEXT_PASSAGE_MODE` is `hybrid` / `bm25` / `dense`.
 
 ---
 
