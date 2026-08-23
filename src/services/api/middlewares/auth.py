@@ -10,18 +10,22 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 import os
 from fastapi import Request
-from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette import status
 
 from src.services.api.console_static import is_console_path
+from src.services.api.errors import error_response
 from src.services.kg_agent.main import cache_adapter
 from src.services.data.main import data_adapter
 
 
 class BrainPATMiddleware(BaseHTTPMiddleware):
-    excluded_prefixes: set[str] = {"/console"}
-    auth_exempt_paths: set[str] = {"/meta/login-info"}
+    excluded_prefixes: set[str] = {"/console", "/docs", "/redoc", "/demo"}
+    auth_exempt_paths: set[str] = {
+        "/health",
+        "/openapi.json",
+        "/meta/login-info",
+    }
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS":
@@ -41,46 +45,64 @@ class BrainPATMiddleware(BaseHTTPMiddleware):
         if not brainpat:
             brainpat = request.headers.get("Authorization")
             if brainpat:
-                brainpat = brainpat.split(" ")[1]
-                if brainpat:
-                    brainpat = brainpat.rstrip()
+                scheme, _, token = brainpat.partition(" ")
+                brainpat = token.rstrip() if scheme.lower() == "bearer" else None
+        if not brainpat:
+            return error_response(
+                request,
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing BrainPAT header",
+            )
         system_pat = os.getenv("BRAINPAT_TOKEN")
         if request.url.path.startswith("/system") or request.url.path == "/":
             if brainpat == system_pat:
                 return await call_next(request)
-            return JSONResponse(
+            return error_response(
+                request,
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Invalid or missing BrainPAT header"},
+                detail="Invalid or missing BrainPAT header",
             )
 
         brain_id = getattr(request.state, "brain_id", None)
         if not brain_id:
-            return JSONResponse(
+            return error_response(
+                request,
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "Brain ID is required."},
+                detail="Brain ID is required.",
+                code="BRAIN_ID_REQUIRED",
+                message="A brain identifier is required.",
+                resolution="Send X-Brain-ID with the intended alphanumeric brain name.",
             )
         cachepat_key = f"brainpat:{brain_id}"
-        cached_brainpat = cache_adapter.get(key=cachepat_key, brain_id="system")
-
-        # Logic --------------------------------------------------
         if brainpat == system_pat:
             return await call_next(request)
+        try:
+            cached_brainpat = cache_adapter.get(key=cachepat_key, brain_id="system")
 
-        if not cached_brainpat:
-            stored_brain = data_adapter.get_brain(name_key=brain_id)
-            if not stored_brain or stored_brain.pat != brainpat:
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Invalid or missing BrainPAT header"},
+            # Logic --------------------------------------------------
+            if not cached_brainpat:
+                stored_brain = data_adapter.get_brain(name_key=brain_id)
+                if not stored_brain or stored_brain.pat != brainpat:
+                    return error_response(
+                        request,
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid or missing BrainPAT header",
+                    )
+                cached_brainpat = stored_brain.pat
+                cache_adapter.set(
+                    key=cachepat_key, value=stored_brain.pat, brain_id="system"
                 )
-            cached_brainpat = stored_brain.pat
-            cache_adapter.set(
-                key=cachepat_key, value=stored_brain.pat, brain_id="system"
-            )
-        elif cached_brainpat != brainpat:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Invalid or missing BrainPAT header"},
+            elif cached_brainpat != brainpat:
+                return error_response(
+                    request,
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or missing BrainPAT header",
+                )
+        except Exception:
+            return error_response(
+                request,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication store unavailable",
             )
 
         response = await call_next(request)

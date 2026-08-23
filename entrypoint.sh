@@ -1,6 +1,19 @@
 #!/bin/bash
 set -e
 
+plugin_failure_policy="${PLUGIN_FAILURE_POLICY:-}"
+if [ -z "$plugin_failure_policy" ]; then
+    if [ "${ENV:-production}" = "development" ]; then
+        plugin_failure_policy="warn"
+    else
+        plugin_failure_policy="fail"
+    fi
+fi
+if [ "$plugin_failure_policy" != "fail" ] && [ "$plugin_failure_policy" != "warn" ]; then
+    echo "[brainapi] PLUGIN_FAILURE_POLICY must be 'fail' or 'warn'" >&2
+    exit 64
+fi
+
 if [ -d /app/.cache ]; then
     chown -R appuser:appuser /app/.cache 2>/dev/null || true
 fi
@@ -16,7 +29,13 @@ if [ -n "$BRAINAPI_PLUGINS" ]; then
         version="${plugin_spec##*:}"
         [ "$name" = "$version" ] && version="latest"
         echo "[brainapi] Installing plugin: $name v$version"
-        gosu appuser /app/.venv/bin/python -m src.core.plugins.cli plugins install "$name" --version "$version" || echo "[brainapi] WARNING: Failed to install plugin '$name'"
+        if ! gosu appuser /app/.venv/bin/python -m src.core.plugins.cli plugins install "$name" --version "$version"; then
+            if [ "$plugin_failure_policy" = "fail" ]; then
+                echo "[brainapi] Failed to install required plugin '$name'" >&2
+                exit 1
+            fi
+            echo "[brainapi] WARNING: Failed to install plugin '$name'" >&2
+        fi
     done
 fi
 

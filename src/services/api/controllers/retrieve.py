@@ -864,10 +864,12 @@ def _hub_completeness_score(candidate: dict[str, Any]) -> float:
     return score
 
 
-def _fact_recency_score(candidate: dict[str, Any]) -> float:
+def _fact_recency_score(
+    candidate: dict[str, Any], *, now: datetime | None = None
+) -> float:
     triple = candidate.get("triple") or ()
     best = 0.0
-    now = datetime.now(tz=None)
+    now = now or datetime.now(tz=None)
     for node in triple[0::2] if triple else ():
         raw = getattr(node, "happened_at", None)
         if not raw:
@@ -882,12 +884,14 @@ def _fact_recency_score(candidate: dict[str, Any]) -> float:
     return best
 
 
-def _relevance_score(candidate: dict[str, Any]) -> float:
+def _relevance_score(
+    candidate: dict[str, Any], *, now: datetime | None = None
+) -> float:
     distance = _candidate_distance(candidate)
     distance_term = 1.0 / (1.0 + max(0.0, distance))
     ppr_term = float(candidate.get("ppr_mass") or 0.0)
     completeness = _hub_completeness_score(candidate) / 3.8
-    recency = _fact_recency_score(candidate)
+    recency = _fact_recency_score(candidate, now=now)
     topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
     return (
         0.45 * distance_term
@@ -946,12 +950,14 @@ def _bridge_reserve_ok(candidate: dict[str, Any]) -> bool:
     return True
 
 
-def _prepare_diversify_item(candidate: dict[str, Any]) -> dict[str, Any]:
+def _prepare_diversify_item(
+    candidate: dict[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
     key = candidate.get("key") or ("", "")
     is_bridge = _is_bridge_candidate(candidate)
     return {
         "candidate": candidate,
-        "relevance": _relevance_score(candidate),
+        "relevance": _relevance_score(candidate, now=now),
         "hub": _event_hub_id(candidate),
         "sessions": frozenset(_candidate_session_ids(candidate)),
         "kind": _hub_leg_kind(candidate),
@@ -970,11 +976,20 @@ def _mmr_pick_index(
     best_idx = 0
     best_mmr = None
     best_tie = None
+    selected_kinds_by_hub: dict[str, set[str]] = defaultdict(set)
+    for selected in selected_meta:
+        selected_kinds_by_hub[selected["hub"]].add(selected["kind"])
     for idx, item in enumerate(remaining):
         relevance = item["relevance"]
         hub = item["hub"]
         sessions = item["sessions"]
-        complementary = _is_complementary_hub_leg(selected_meta, item)
+        complementary = (
+            item["kind"] in {"spine", "context"}
+            and bool(
+                selected_kinds_by_hub.get(item["hub"], set())
+                & ({"spine", "context"} - {item["kind"]})
+            )
+        )
         if complementary:
             hub_pen = 0.0
             sess_pen = 0.0
@@ -1073,7 +1088,10 @@ def _diversify_facts(
     if len(ranked) <= max_facts:
         return list(ranked)
 
-    prepared = [_prepare_diversify_item(candidate) for candidate in ranked]
+    ranking_now = datetime.now(tz=None)
+    prepared = [
+        _prepare_diversify_item(candidate, now=ranking_now) for candidate in ranked
+    ]
     prepared.sort(key=lambda item: (-item["relevance"], item["tie"]))
 
     selected: list[dict[str, Any]] = []
@@ -2083,7 +2101,7 @@ async def _build_context(
         except Exception as exc:
             topic_detail["error"] = str(exc)[:120]
 
-    with profile_stage("facts.diversify", max_facts=max_facts) as detail:
+    with profile_stage("fact_filter") as detail:
         if request.apply_fact_filter and fact_filter_adapter is not None and ranked:
             detail["filter_applied"] = True
             keep = filter_relevant_facts(
@@ -2098,18 +2116,21 @@ async def _build_context(
         else:
             detail["filter_applied"] = False
             filtered = ranked
+
+    with profile_stage("facts.diversify", max_facts=max_facts) as detail:
         filtered = _rank_facts_with_completeness(filtered)
         curated = _diversify_facts(filtered, max_facts=max_facts)
         detail["candidates"] = len(filtered)
         detail["curated"] = len(curated)
 
-    temporal_conflicts = _temporal_conflict_meta(curated)
-
-    text_lines, triples, graph_session_ids = _build_fact_channel(
-        curated, chunk_sessions
-    )
-
-    source_passages = source_passages[:max_passages]
+    with profile_stage("context.assemble") as detail:
+        temporal_conflicts = _temporal_conflict_meta(curated)
+        text_lines, triples, graph_session_ids = _build_fact_channel(
+            curated, chunk_sessions
+        )
+        source_passages = source_passages[:max_passages]
+        detail["facts"] = len(text_lines)
+        detail["passages"] = len(source_passages)
 
     insufficient = False
     if request.sufficiency_retry:

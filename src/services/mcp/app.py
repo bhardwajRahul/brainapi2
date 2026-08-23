@@ -31,6 +31,15 @@ def _load_mcp_plugins():
     loader = PluginLoader(plugins_dir=PLUGINS_DIR, context=ctx)
     results = loader.load_all()
     _log_plugin_banner(loader, results)
+    failed = sorted(name for name, loaded in results.items() if not loaded)
+    default_policy = (
+        "warn" if os.getenv("ENV", "production").lower() == "development" else "fail"
+    )
+    policy = os.getenv("PLUGIN_FAILURE_POLICY", default_policy).strip().lower()
+    if policy not in {"fail", "warn"}:
+        raise RuntimeError("PLUGIN_FAILURE_POLICY must be 'fail' or 'warn'")
+    if failed and policy == "fail":
+        raise RuntimeError(f"Required plugins failed to load: {', '.join(failed)}")
 
 
 def _log_plugin_banner(loader, results: dict[str, bool]):

@@ -14,8 +14,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from src.services.api.dependencies import get_brain_id
 from src.services.api.constants.requests import (
+    GetEntityContextResponse,
+    GetEntityInfoResponse,
+    GetEntitySibilingsResponse,
+    GetEntityStatusResponse,
     GetContextRequestBody,
     GetContextResponse,
+    RecommendResponse,
     RecommendRequestBody,
     RetrieveNeighborsAiModeRequestBody,
     RetrieveNeighborsWithIdentificationParamsRequestBody,
@@ -23,6 +28,22 @@ from src.services.api.constants.requests import (
     RetrieveNeighborsRequestResponse,
     SearchRequestBody,
     SearchResponse,
+)
+from src.services.api.constants.responses import (
+    ChangelogItemResponse,
+    ChangelogListResponse,
+    EntityListResponse,
+    HopListResponse,
+    LabelListResponse,
+    ObservationItemResponse,
+    ObservationListResponse,
+    RelationshipListResponse,
+    StructuredDataItemResponse,
+    StructuredDataListResponse,
+    TextChunkListResponse,
+    TypeListResponse,
+    VectorListResponse,
+    VectorStoreListResponse,
 )
 from src.services.api.controllers.retrieve import (
     retrieve_neighbors as retrieve_neighbors_controller,
@@ -122,7 +143,9 @@ async def get_neighbors_with_identification_params(
     )
 
 
-@retrieve_router.post("/entities/neighbors/ai-mode")
+@retrieve_router.post(
+    "/entities/neighbors/ai-mode", response_model=RetrieveNeighborsRequestResponse
+)
 async def get_neighbors_ai_mode(
     request: RetrieveNeighborsAiModeRequestBody = Body(
         ...,
@@ -146,7 +169,7 @@ async def get_neighbors_ai_mode(
     )
 
 
-@retrieve_router.post("/context")
+@retrieve_router.post("/context", response_model=GetContextResponse)
 async def get_context(
     request: GetContextRequestBody,
     brain_id: str = Depends(get_brain_id),
@@ -166,7 +189,7 @@ async def get_context(
     return await retrieve_get_context_controller(request)
 
 
-@retrieve_router.get(path="/relationships")
+@retrieve_router.get(path="/relationships", response_model=RelationshipListResponse)
 async def get_relationships(
     limit: int = 10,
     skip: int = 0,
@@ -211,7 +234,7 @@ async def get_relationships(
     )
 
 
-@retrieve_router.get(path="/entities")
+@retrieve_router.get(path="/entities", response_model=EntityListResponse)
 async def get_entities(
     limit: int = 10,
     skip: int = 0,
@@ -237,7 +260,7 @@ async def get_entities(
     )
 
 
-@retrieve_router.get(path="/structured-data/types")
+@retrieve_router.get(path="/structured-data/types", response_model=TypeListResponse)
 async def get_structured_data_types(
     brain_id: str = Depends(get_brain_id),
 ):
@@ -247,7 +270,9 @@ async def get_structured_data_types(
     return await get_structured_data_types_controller(brain_id)
 
 
-@retrieve_router.get(path="/structured-data/{id}")
+@retrieve_router.get(
+    path="/structured-data/{id}", response_model=StructuredDataItemResponse
+)
 async def get_structured_data_by_id(
     id: str,
     brain_id: str = Depends(get_brain_id),
@@ -258,7 +283,7 @@ async def get_structured_data_by_id(
     return await get_structured_data_by_id_controller(id, brain_id)
 
 
-@retrieve_router.get(path="/structured-data")
+@retrieve_router.get(path="/structured-data", response_model=StructuredDataListResponse)
 async def get_structured_data_list(
     limit: int = 10,
     skip: int = 0,
@@ -276,7 +301,7 @@ async def get_structured_data_list(
     )
 
 
-@retrieve_router.get(path="/text-chunks")
+@retrieve_router.get(path="/text-chunks", response_model=TextChunkListResponse)
 async def get_text_chunks(
     brain_id: str = Depends(get_brain_id),
     limit: int = 10,
@@ -328,7 +353,7 @@ async def get_text_chunks(
     )
 
 
-@retrieve_router.get(path="/observations/labels")
+@retrieve_router.get(path="/observations/labels", response_model=LabelListResponse)
 async def get_observation_labels(
     brain_id: str = Depends(get_brain_id),
 ):
@@ -338,7 +363,9 @@ async def get_observation_labels(
     return await get_observation_labels_controller(brain_id)
 
 
-@retrieve_router.get(path="/observations/{id}")
+@retrieve_router.get(
+    path="/observations/{id}", response_model=ObservationItemResponse
+)
 async def get_observation_by_id(
     id: str,
     brain_id: str = Depends(get_brain_id),
@@ -349,7 +376,7 @@ async def get_observation_by_id(
     return await get_observation_by_id_controller(id, brain_id)
 
 
-@retrieve_router.get(path="/observations")
+@retrieve_router.get(path="/observations", response_model=ObservationListResponse)
 async def get_observations_list(
     limit: int = 10,
     skip: int = 0,
@@ -380,7 +407,7 @@ async def get_observations_list(
     )
 
 
-@retrieve_router.get(path="/changelogs/types")
+@retrieve_router.get(path="/changelogs/types", response_model=TypeListResponse)
 async def get_changelog_types(
     brain_id: str = Depends(get_brain_id),
 ):
@@ -396,7 +423,7 @@ async def get_changelog_types(
     return await get_changelog_types_controller(brain_id)
 
 
-@retrieve_router.get(path="/changelogs/{id}")
+@retrieve_router.get(path="/changelogs/{id}", response_model=ChangelogItemResponse)
 async def get_changelog_by_id(
     id: str,
     brain_id: str = Depends(get_brain_id),
@@ -414,7 +441,7 @@ async def get_changelog_by_id(
     return await get_changelog_by_id_controller(id, brain_id)
 
 
-@retrieve_router.get(path="/changelogs")
+@retrieve_router.get(path="/changelogs", response_model=ChangelogListResponse)
 async def get_changelogs_list(
     limit: int = 10,
     skip: int = 0,
@@ -439,7 +466,7 @@ async def get_changelogs_list(
     )
 
 
-@retrieve_router.get(path="/hops")
+@retrieve_router.get(path="/hops", response_model=HopListResponse)
 async def get_hops(
     query: str,
     degrees: Literal[2] = 2,
@@ -461,7 +488,7 @@ async def get_hops(
     return await get_hops_controller(query, degrees, flattened, brain_id)
 
 
-@retrieve_router.get(path="/entity/info")
+@retrieve_router.get(path="/entity/info", response_model=GetEntityInfoResponse)
 async def get_entity_info(
     target: str,
     query: str,
@@ -483,7 +510,7 @@ async def get_entity_info(
     return await get_entity_info_controller(target, query, max_depth, brain_id)
 
 
-@retrieve_router.get(path="/entity/context")
+@retrieve_router.get(path="/entity/context", response_model=GetEntityContextResponse)
 async def get_entity_context(
     target: str,
     context_depth: int = 3,
@@ -503,7 +530,7 @@ async def get_entity_context(
     return await get_entity_context_controller(target, context_depth, brain_id)
 
 
-@retrieve_router.get(path="/entity/synergies")
+@retrieve_router.get(path="/entity/synergies", response_model=GetEntitySibilingsResponse)
 async def get_entity_synergies(
     target: str,
     polarity: Literal["same", "opposite"] = "same",
@@ -535,7 +562,12 @@ async def get_entity_synergies(
     )
 
 
-@retrieve_router.get(path="/recommend")
+@retrieve_router.get(
+    path="/recommend",
+    response_model=RecommendResponse,
+    summary="Recommend entities (Preview)",
+    openapi_extra={"x-stability": "preview"},
+)
 async def get_recommend(
     target: str,
     polarity: Literal["same", "opposite"] = "same",
@@ -552,7 +584,7 @@ async def get_recommend(
     brain_id: str = Depends(get_brain_id),
 ):
     """
-    Ranked event-graph recommendations composing synergies, asymmetric
+    Preview: ranked event-graph recommendations composing synergies, asymmetric
     complementary walks, multi-interest medoids, and optional attribute
     preferences (retrieval-time only; no training).
     """
@@ -574,11 +606,17 @@ async def get_recommend(
     )
 
 
-@retrieve_router.post(path="/recommend")
+@retrieve_router.post(
+    path="/recommend",
+    response_model=RecommendResponse,
+    summary="Recommend entities from a request body (Preview)",
+    openapi_extra={"x-stability": "preview"},
+)
 async def post_recommend(
     body: RecommendRequestBody,
     brain_id: str = Depends(get_brain_id),
 ):
+    """Preview recommendation surface; request and response compatibility is kept."""
     return await get_recommendations_controller(
         body.target,
         body.polarity,
@@ -674,7 +712,7 @@ async def post_search(
     return await search_controller(body)
 
 
-@retrieve_router.get(path="/entity/status")
+@retrieve_router.get(path="/entity/status", response_model=GetEntityStatusResponse)
 async def get_entity_status(
     target: str,
     types: Optional[List[str]] = None,
@@ -694,7 +732,7 @@ async def get_entity_status(
     return await get_entity_status_controller(target, types or [], brain_id)
 
 
-@retrieve_router.get(path="/vectors/stores")
+@retrieve_router.get(path="/vectors/stores", response_model=VectorStoreListResponse)
 async def get_vector_stores():
     """
     List available vector store names and dimensions.
@@ -702,7 +740,7 @@ async def get_vector_stores():
     return await get_vector_stores_controller()
 
 
-@retrieve_router.get(path="/vectors/{store}")
+@retrieve_router.get(path="/vectors/{store}", response_model=VectorListResponse)
 async def get_vectors_list(
     store: str,
     limit: int = 10,

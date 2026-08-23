@@ -14,12 +14,11 @@ from email import policy
 from email.parser import BytesParser
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
-from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette import status
 
 from src.services.api.console_static import is_console_path
+from src.services.api.errors import error_response
 from src.services.data.main import data_adapter
 from src.services.kg_agent.main import cache_adapter
 
@@ -44,8 +43,12 @@ def _brain_id_from_multipart(body: bytes, content_type: str) -> str | None:
 
 
 class BrainMiddleware(BaseHTTPMiddleware):
-    excluded_prefixes: set[str] = {"/console"}
-    brain_exempt_paths: set[str] = {"/meta/login-info"}
+    excluded_prefixes: set[str] = {"/console", "/docs", "/redoc", "/demo"}
+    brain_exempt_paths: set[str] = {
+        "/health",
+        "/openapi.json",
+        "/meta/login-info",
+    }
 
     async def dispatch(self, request: Request, call_next):
         if is_console_path(request.url.path):
@@ -55,6 +58,13 @@ class BrainMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if request.url.path in self.brain_exempt_paths:
+            return await call_next(request)
+
+        brainpat = request.headers.get("BrainPAT")
+        authorization = request.headers.get("Authorization", "")
+        if not brainpat and not authorization.lower().startswith("bearer "):
+            # Authentication middleware owns the missing-credential response. Avoid
+            # touching a backing store before it can return a structured 401.
             return await call_next(request)
 
         async def _get_brain_id():
@@ -103,7 +113,6 @@ class BrainMiddleware(BaseHTTPMiddleware):
         brain_id = await _get_brain_id()
         brain_creation_allowed = os.getenv("BRAIN_CREATION_ALLOWED") == "true"
         default_brain_fallback = os.getenv("DEFAULT_BRAIN_FALLBACK") == "true"
-        cached_brain_id = cache_adapter.get(key=f"brain:{brain_id}", brain_id="system")
 
         # Bypassing system routes --------------------------------
         if request.url.path.startswith("/system") or request.url.path == "/":
@@ -111,17 +120,29 @@ class BrainMiddleware(BaseHTTPMiddleware):
 
         # Cleanup checks -----------------------------------------
         if brain_id == "system":
-            return JSONResponse(
+            return error_response(
+                request,
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "System brain is not allowed to be used."},
+                detail="System brain is not allowed to be used.",
+                code="BRAIN_ID_RESERVED",
+                message="The system brain is reserved.",
+                resolution="Select a non-system application brain.",
             )
         if brain_id and not brain_id.isalnum():
-            return JSONResponse(
+            return error_response(
+                request,
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "Brain ID must be alphanumeric.", "value": brain_id},
+                detail="Brain ID must be alphanumeric.",
+                code="BRAIN_ID_INVALID",
+                message="The brain identifier is invalid.",
+                resolution="Use an alphanumeric X-Brain-ID value.",
+                extra={"value": brain_id},
             )
 
         try:
+            cached_brain_id = cache_adapter.get(
+                key=f"brain:{brain_id}", brain_id="system"
+            )
             if brain_id and not cached_brain_id:
                 stored_brain = data_adapter.get_brain(name_key=brain_id)
 
@@ -157,19 +178,18 @@ class BrainMiddleware(BaseHTTPMiddleware):
                         brain_id="system",
                     )
                     request.state.brain_id = "default"
-        except (OperationFailure, ServerSelectionTimeoutError) as e:
-            return JSONResponse(
+        except Exception:
+            return error_response(
+                request,
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={
-                    "detail": "Database unavailable. Check MongoDB connection and credentials (e.g. MONGO_* or MONGO_CONNECTION_STRING).",
-                    "error": str(e),
-                },
+                detail="Database unavailable. Check MongoDB connection and credentials (e.g. MONGO_* or MONGO_CONNECTION_STRING).",
             )
 
         if getattr(request.state, "brain_id", None) is None:
-            return JSONResponse(
+            return error_response(
+                request,
                 status_code=status.HTTP_406_NOT_ACCEPTABLE,
-                content={"detail": "Brain not found or creation is not allowed."},
+                detail="Brain not found or creation is not allowed.",
             )
 
         return await call_next(request)

@@ -806,6 +806,8 @@
     },
     "search": {
       "name": "Search (hybrid BM25 + dense)",
+      "representative_run_id": "search-wands-passages-k50",
+      "representative_scope": "WANDS frozen slice: 66 queries / 2000 documents",
       "leaderboard": [
         {
           "run_id": "search-20260818T111250Z",

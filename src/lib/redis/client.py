@@ -28,6 +28,7 @@ class RedisClient(CacheClient):
         pool = ConnectionPool(
             host=config.redis.host,
             port=config.redis.port,
+            password=config.redis.password,
             socket_connect_timeout=5,
             socket_timeout=5,
             retry_on_timeout=True,

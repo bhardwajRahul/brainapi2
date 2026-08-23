@@ -625,7 +625,11 @@ def prefers_triple(
     }
 
 
-def interaction_to_triples(row: dict[str, Any], *, seq: int) -> list[dict[str, Any]]:
+def interaction_to_triples(
+    row: dict[str, Any] | Sequence[dict[str, Any]], *, seq: int = 1
+) -> list[dict[str, Any]]:
+    if not isinstance(row, dict):
+        return interactions_to_triples(row, seq_start=seq)
     user_id = str(row.get("user_id") or "").strip()
     item_id = str(row.get("item_id") or "").strip()
     if not user_id or not item_id:

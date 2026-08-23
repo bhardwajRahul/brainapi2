@@ -1,0 +1,55 @@
+name: Heavy production validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heavy-smoke-and-restore:
+    runs-on: [self-hosted, linux, x64, brainapi-heavy]
+    timeout-minutes: 90
+    env:
+      BRAINAPI_IMAGE: brainapi:heavy-ci
+      BRAINAPI_ENV_FILE: env.heavy.example
+      REDIS_PASSWORD: ci-redis-password
+      NEO4J_PASSWORD: ci-neo4j-password
+      MONGO_PASSWORD: ci-mongo-password
+      MINIO_ACCESS_KEY: ci-minio-access
+      MINIO_SECRET_KEY: ci-minio-secret-password
+      MILVUS_ROOT_PASSWORD: ci-milvus-password
+      MILVUS_TOKEN: root:ci-milvus-password
+      BRAINPAT_TOKEN: ci-system-token
+      BACKUP_DIR: ${{ github.workspace }}/.backup-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require runner capacity
+        run: |
+          awk '/MemTotal/ { exit !($2 >= 16000000) }' /proc/meminfo
+          test "$(uname -m)" = x86_64
+      - run: docker compose -f deploy/docker-compose.heavy.yaml config -q
+      - run: docker build --platform linux/amd64 -t "$BRAINAPI_IMAGE" .
+      - name: Clean heavy startup
+        run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml up -d --wait
+      - run: curl --fail --retry 20 --retry-delay 5 http://localhost/health
+      - name: Backup and verify
+        id: backup
+        run: |
+          archive=$(deploy/brainapi-backup backup --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --backup-dir "$BACKUP_DIR" | tail -1)
+          deploy/brainapi-backup verify --profile heavy --env-file deploy/env.heavy.example --archive "$archive"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Restore into clean volumes
+        run: |
+          docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml down --volumes
+          deploy/brainapi-backup restore --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --archive "${{ steps.backup.outputs.archive }}"
+          curl --fail --retry 20 --retry-delay 5 http://localhost/health
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml logs --no-color
+      - name: Clean heavy volumes
+        if: always()
+        run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml down --volumes --remove-orphans

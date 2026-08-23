@@ -18,7 +18,7 @@
     "lumen-ui-kit": "^0.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^7.6.0",
+    "react-router-dom": "^7.18.2",
     "vis-data": "^8.0.3",
     "vis-network": "^10.0.2"
   },

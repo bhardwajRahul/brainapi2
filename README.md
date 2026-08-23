@@ -220,10 +220,11 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 
 | Endpoint                     | Method | What you get                                                                                                     |
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — the matching graph triples plus historical context                |
+| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — one-shot graph and passage context; p50 target < 1000 ms           |
 | `/retrieve/search`           | `GET`/`POST` | **Ranked search hits** (opt-in: `SEARCH_ENABLED=true`) — passages (BM25 ∪ dense) by default; optional `entities` / `events` / `communities` channels and `expand=neighbors`; p50 < 200 ms excluding embed |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
-| `/retrieve/entity/synergies` | `GET`  | **Similar things** related to a given one — effectively a recommendation algorithm over the graph                |
+| `/retrieve/entity/synergies` | `GET`  | **Similar things (Preview)** related to a given one; quality thresholds are not yet release-stable                |
+| `/retrieve/recommend`        | `GET`/`POST` | **Ranked recommendations (Preview)**; endpoint compatibility is retained while the quality gate is defined |
 
 **Get context for a question:**
 
@@ -243,7 +244,7 @@ curl "http://localhost:8000/retrieve/entity/status?target=Emily" \
 # → { "exists": true, "node": {...}, "relationships": [...], "observations": [...] }
 ```
 
-**Find synergies (recommendations):**
+**Find synergies (recommendations, Preview):**
 
 ```sh
 curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101" \
@@ -251,7 +252,7 @@ curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%2
 # → similar entities ranked by how strongly they connect to the target
 ```
 
-These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [REST API Reference](https://brainapi.lumen-labs.ai/docs/rest).
+These endpoints cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [REST API Reference](https://brainapi.lumen-labs.ai/docs/rest).
 
 ---
 

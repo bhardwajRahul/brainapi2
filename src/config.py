@@ -303,6 +303,7 @@ class RedisConfig:
         self.host = os.getenv("REDIS_HOST")
         port_str = os.getenv("REDIS_PORT")
         self.port = int(port_str) if port_str else None
+        self.password = os.getenv("REDIS_PASSWORD") or None
 
         if [self.host, self.port].count(None) > 0:
             raise ValueError("Redis configuration is not complete")
