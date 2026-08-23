@@ -11,6 +11,7 @@ import {
 } from "../flows/pipeline.js";
 import { askConnections } from "../flows/connections.js";
 import { askAuth } from "../flows/auth.js";
+import { askSearch } from "../flows/search.js";
 import { askServicesRuntime } from "../flows/services-runtime.js";
 import {
   runSetupWizard,
@@ -37,6 +38,7 @@ type ConfigMenuSection =
   | "runtime"
   | "models"
   | "pipeline"
+  | "search"
   | "connections"
   | "auth"
   | "plugins"
@@ -66,6 +68,15 @@ function draftSummary(draft: ConfigDraft): string {
       ? `Pipeline OCR: ${draft.pipeline.ocrMode}`
       : "Pipeline OCR: not configured",
   );
+  if (draft.search) {
+    lines.push(
+      draft.search.enabled
+        ? `Search: enabled (${draft.search.retrieval})`
+        : "Search: disabled",
+    );
+  } else {
+    lines.push("Search: not configured (default off)");
+  }
   lines.push(
     draft.connections ? "Connections: configured" : "Connections: not configured",
   );
@@ -100,6 +111,7 @@ async function configMainMenu(): Promise<ConfigMenuSection> {
       { value: "runtime", label: "Services runtime" },
       { value: "models", label: "Models (LLM & embeddings)" },
       { value: "pipeline", label: "Pipeline (OCR)" },
+      { value: "search", label: "Search (BM25 + dense)" },
       { value: "connections", label: "Connection details" },
       { value: "auth", label: "Authentication token" },
       { value: "plugins", label: "Plugins (install/uninstall)" },
@@ -188,6 +200,20 @@ async function configurePipeline(draft: ConfigDraft): Promise<void> {
   draft.pipeline = pipeline;
   draft.usedDefaults = false;
   p.log.success("Pipeline updated.");
+}
+
+async function configureSearch(draft: ConfigDraft): Promise<void> {
+  const search = await askSearch({
+    allowBack: true,
+    backHint: MENU_BACK_HINT,
+    initial: draft.search,
+    dataDb: draft.dbs?.dataDb,
+  });
+  if (isPromptBack(search)) {
+    return;
+  }
+  draft.search = search;
+  p.log.success("Search updated.");
 }
 
 async function configureConnections(draft: ConfigDraft): Promise<void> {
@@ -392,6 +418,9 @@ export async function runConfig(): Promise<void> {
         break;
       case "pipeline":
         await configurePipeline(draft);
+        break;
+      case "search":
+        await configureSearch(draft);
         break;
       case "connections":
         await configureConnections(draft);

@@ -3,6 +3,7 @@ import { askUseDefaults, DEFAULT_DBS } from "./defaults.js";
 import { askDatabases } from "./services.js";
 import { askModels } from "./models.js";
 import { askPipeline } from "./pipeline.js";
+import { askSearch, defaultSearchChoices } from "./search.js";
 import { askConnections } from "./connections.js";
 import { askAuth } from "./auth.js";
 import { askServicesRuntime } from "./services-runtime.js";
@@ -20,6 +21,7 @@ import type {
   ModelsChoices,
   PluginChoice,
   PipelineChoices,
+  SearchChoices,
   ServicesRuntime,
 } from "../types.js";
 
@@ -28,6 +30,7 @@ export interface SetupDraft {
   servicesRuntime?: ServicesRuntime;
   models?: ModelsChoices;
   pipeline?: PipelineChoices;
+  search?: SearchChoices;
   connections?: Connections;
   auth?: AuthChoices;
   plugins?: PluginChoice[];
@@ -47,6 +50,7 @@ export function toInitChoices(draft: SetupDraft): InitChoices {
     servicesRuntime: draft.servicesRuntime!,
     models: draft.models!,
     pipeline: draft.pipeline!,
+    search: draft.search ?? defaultSearchChoices(),
     connections: draft.connections!,
     auth: draft.auth!,
     plugins: draft.plugins ?? [],
@@ -243,19 +247,35 @@ export async function runSetupWizard(
     }
 
     if (step === 5) {
-      if (!draft.dbs) {
-        step = draft.usedDefaults ? 0 : 1;
+      const search = await askSearch({
+        allowBack: true,
+        backHint: stepBackHint,
+        initial: draft.search,
+        dataDb: draft.dbs?.dataDb,
+      });
+      if (isPromptBack(search)) {
+        step = draft.usedDefaults ? 3 : 4;
         continue;
       }
-      draft.connections = await askConnections(draft.dbs, flags);
+      draft.search = search;
       step = 6;
       continue;
     }
 
     if (step === 6) {
+      if (!draft.dbs) {
+        step = draft.usedDefaults ? 0 : 1;
+        continue;
+      }
+      draft.connections = await askConnections(draft.dbs, flags);
+      step = 7;
+      continue;
+    }
+
+    if (step === 7) {
       if (flags?.brainpatToken) {
         draft.auth = { brainpatToken: flags.brainpatToken };
-        step = 7;
+        step = 8;
         continue;
       }
       const auth = await askAuth({
@@ -264,15 +284,15 @@ export async function runSetupWizard(
         prechosenToken: flags?.brainpatToken,
       });
       if (isPromptBack(auth)) {
-        step = 5;
+        step = 6;
         continue;
       }
       draft.auth = auth;
-      step = 7;
+      step = 8;
       continue;
     }
 
-    if (step === 7) {
+    if (step === 8) {
       if (flags?.noPlugins || flags?.plugins !== undefined) {
         draft.plugins = flags.noPlugins ? [] : (flags.plugins ?? []);
         return true;
@@ -285,7 +305,7 @@ export async function runSetupWizard(
         skip: flags?.noPlugins,
       });
       if (isPromptBack(plugins)) {
-        step = 6;
+        step = 7;
         continue;
       }
       draft.plugins = plugins;
