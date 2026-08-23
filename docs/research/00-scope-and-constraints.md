@@ -40,6 +40,15 @@ Anything expensive must be either moved to write time or exposed only on the dee
 | `13-locomo-93-research-levers.md` | Evidence-backed research levers for HyperMem-class ≥93% (harness-first) |
 | `15-ecommerce-gnn-recsys-landscape.md` | External GNN/e-commerce RecSys curriculum & industry index; BrainAPI mapping |
 | `16-recsys-eval-protocol.md` | Held-out next-item eval on demorecsys via structured ingest + /retrieve/recommend |
+| `17-search-surface-and-cross-features.md` | Search as a third product surface on the same KB; shared indexes; non-regression vs LoCoMo/BEAM/recsys |
+| `18-search-eval-protocol.md` | Hybrid BM25+dense search eval on `searchbench*`; ledger `benchmarks.search`; no LoCoMo judge |
+| `19-search-esci-quality.md` | ESCI US first-stage / rerank quality track; frozen `searchbenchesci74` |
+| `20-esci-sota-targets.md` | External ESCI / commerce-search SOTA numbers; what we may and may not quote |
+| `21-esci-ce-graded-and-first-stage.md` | Graded CE and first-stage plugin arms; not the ADR-007 200 ms default |
+| `22-multilingual-ecommerce-search.md` | Multilingual first-stage (ESCI ES/JP; Italian smoke, not ESCI) and production commerce plan; `/retrieve/search` only |
+| `23-search-wands-quality.md` | Frozen WANDS passages control (nDCG@10 **0.823**); not a catalog-graph claim |
+| `24-search-catalog-graph.md` | Opt-in catalog graph + `node_id` sidecar; architecture-demo on `searchbenchwandsgraph` |
+| `25-personalized-search.md` | Query-gated rerank of already retrieved hits via optional `target`; ADR-008 |
 
 ## Decisions already taken during research
 

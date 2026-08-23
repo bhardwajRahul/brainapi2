@@ -14,7 +14,7 @@ Freshness: each structured ingest changes graph walks / attribute prefs immediat
 
 **Not** LoCoMo / LongMemEval / BEAM. Never write to or wipe `beam1m1clean`, `locomoconv26*`, or other memory-eval brains. Ledger upserts go only to `benchmarks.recsys` in [`benchmarks/REPORTS.json`](../../benchmarks/REPORTS.json).
 
-Related: [ADR-002](../decisions/002-structured-ingestion-specific-processing.md), [15-ecommerce-gnn-recsys-landscape.md](15-ecommerce-gnn-recsys-landscape.md).
+Related: [ADR-002](../decisions/002-structured-ingestion-specific-processing.md), [15-ecommerce-gnn-recsys-landscape.md](15-ecommerce-gnn-recsys-landscape.md), [ADR-008](../decisions/008-query-gated-search-personalization.md) (search `target` is not this protocol).
 
 ---
 
@@ -100,3 +100,4 @@ Requires `BRAINPAT_TOKEN` in `benchmarks/.env`. Default brain: `demorecsys`. Rep
 - Default harness backend is **graph** (`GET /retrieve/recommend`); use `--backend lightgcn` only for the offline comparator.
 - Do **not** mutate `benchmarks.locomo` / `beam` / `longmemeval` ledger rows.
 - Do **not** point `--brain` at memory-eval brains.
+- Do **not** score recsys HitRate as search nDCG. Optional `/retrieve/search?target=` is [25-personalized-search.md](25-personalized-search.md) / ADR-008 on `searchbench*` only, never `demorecsys`.
