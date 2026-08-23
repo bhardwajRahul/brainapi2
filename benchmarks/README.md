@@ -6,6 +6,8 @@ Standalone HTTP-only harnesses (no `src/` imports):
 | --- | --- | --- |
 | [LoCoMo](https://github.com/snap-research/LoCoMo) | `locomo/` | `./locomo.sh` |
 | [LongMemEval](https://github.com/xiaowu0162/LongMemEval) | `longmemeval/` | `./longmemeval.sh` |
+| RecSys | `recsys/` | `./recsys.sh` |
+| Search | `search/` | `./search.sh` |
 
 Shared setup: `requirements.txt`, `.env` (`BRAINPAT_TOKEN`, LLM keys). Results ledger: [`REPORTS.json`](REPORTS.json). Agent notes: [`AGENTS.md`](AGENTS.md).
 
@@ -327,3 +329,56 @@ Do **not** ingest probing questions, rubrics, or ideal answers.
 
 **Cost warning:** even one 100K chat is ~100+ turns; start with `--limit-turns` / `--limit`.
 **1M wall time:** ~40h at concurrency 1; ~20–25h at 2 with healthy API (see `docs/research/10-beam-protocol.md`).
+
+---
+
+# Search benchmark for BrainAPI
+
+Standalone HTTP-only harness for `POST /retrieve/search` (hybrid BM25 + dense). It does **not** import `src/` and does **not** call `/retrieve/context`.
+
+Protocol: [`docs/research/18-search-eval-protocol.md`](../docs/research/18-search-eval-protocol.md).
+
+## Prerequisites
+
+- BrainAPI running with `SEARCH_ENABLED=true`, `DATA_DB=postgresql`, `BRAIN_CREATION_ALLOWED=true`
+- `BRAINPAT_TOKEN` in `benchmarks/.env`
+- Brain id starting with `searchbench` (default `searchbenchsmoke`)
+
+A 404 on `/retrieve/search` means search is disabled — fix the server env; it is not a ranking miss.
+
+## Quickstart
+
+```bash
+cd benchmarks
+./search.sh dataset-stats
+./search.sh smoke
+./search.sh evaluate --fusion rrf
+./search.sh evaluate --rerank plugin:cross-encoder
+./search.sh report --run <run_id>
+```
+
+Toy corpus: [`data/search_toy.jsonl`](data/search_toy.jsonl) (keyword + paraphrase queries; gold via `DOCID` markers). Search ingest defaults to **chunk + embed only** (`skip_enrichment`); pass `--enrich` for Scout/Architect.
+
+Product-search corpora (LLM-free ingest; dedicated `searchbench*` brains, not `demorecsys`):
+
+```bash
+./search.sh download --name esci
+./search.sh download --name wands
+./search.sh dataset-stats --dataset data/search_esci.jsonl
+./search.sh evaluate --dataset data/search_esci.jsonl --brain searchbenchesci --run search-esci
+./search.sh --brain searchbenchwands evaluate --dataset data/search_wands.jsonl --run search-wands-passages-k50 --channels passages --k 50 --ks 5,10,20,50
+./search.sh --brain searchbenchwands evaluate --dataset data/search_wands.jsonl --run search-wands-passages-k50 --channels passages --k 50 --ks 5,10,20,50 --skip-ingest
+./search.sh --brain searchbenchwandsgraph evaluate --dataset data/search_wands.jsonl --run search-wandsgraph-communities-k50 --channels communities --k 50 --ks 5,10,20,50 --ingest-graph
+```
+
+`download` writes a **subset** under `data/` (gitignored): Amazon ESCI / Shopping Queries (KDD Cup 2022, US Task 1 test) and WANDS (Wayfair). Defaults: 80 queries, 2000 products, 40 candidates per query. Frozen WANDS quality slice is `data/search_wands.jsonl` (**66** queries / **2000** docs); `--force` cannot clobber it. Raw caches live in `data/esci/` and `data/wands/`. nDCG@10 is graded (ESCI E=1 / S=0.1 / C=0.01 / I=0; WANDS Exact=1 / Partial=0.5 / Irrelevant=0). WANDS first-stage control: passages, k=50, `rerank=none`, brain `searchbenchwands`, then `--skip-ingest`. Opt-in catalog graph: new brain `searchbenchwandsgraph` only; architecture demo, do not mix with ESCI nDCG or frozen WANDS 0.823.
+
+Optional plugins (core hybrid works if they are absent; unknown `plugin:<name>` is 400):
+
+- `plugins/search-rerank` — `--rerank plugin:cross-encoder` (K≤10)
+- `plugins/search-splade` — `--channels plugin:splade` after `POST /search-splade/index`
+- `plugins/search-colbert` — `--channels plugin:colbert` after `POST /search-colbert/index`
+
+Metrics: Recall@{5,10,20}, nDCG@10, MRR; p50/p95 of retrieve **excluding** embed RTT. Successful `evaluate` upserts `benchmarks.search` in [`REPORTS.json`](REPORTS.json). Smoke does not publish scores.
+
+Never ingest into or wipe `locomoconv*`, `beam*`, or `demorecsys`.

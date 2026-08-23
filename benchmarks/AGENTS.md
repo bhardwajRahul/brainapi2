@@ -8,8 +8,9 @@
 | **LongMemEval** | `benchmarks/longmemeval/` | `./longmemeval.sh` | `benchmarks.longmemeval` |
 | **BEAM** | `benchmarks/beam/` | `./beam.sh` | `benchmarks.beam` |
 | **RecSys** | `benchmarks/recsys/` | `./recsys.sh` | `benchmarks.recsys` |
+| **Search** | `benchmarks/search/` | `./search.sh` | `benchmarks.search` |
 
-All harnesses talk to a running BrainAPI over HTTP only (no `src/` imports). RecSys uses `POST /ingest/structured` (KB write) + **train-free** `GET /retrieve/recommend` on brain **`demorecsys` only** — never LoCoMo/BEAM brains. Optional: `plugins/features-rec` for attribute prefs; `plugins/recsys-gnn` LightGCN via `--backend lightgcn`.
+All harnesses talk to a running BrainAPI over HTTP only (no `src/` imports, except Search `mapping.py` re-exporting the product catalog mapper). RecSys uses `POST /ingest/structured` (KB write) + **train-free** `GET /retrieve/recommend` on brain **`demorecsys` only** — never LoCoMo/BEAM brains. Optional: `plugins/features-rec` for attribute prefs; `plugins/recsys-gnn` LightGCN via `--backend lightgcn`. Search uses `POST /ingest/` + `POST /retrieve/search` on **`searchbench*` only** — never LoCoMo/BEAM/recsys brains, never `/retrieve/context` as the metric path.
 
 ### LoCoMo
 
@@ -35,6 +36,28 @@ Held-out next-item HitRate/Recall@K via **train-free graph recommend** (default)
 
 Protocol: [`docs/research/16-recsys-eval-protocol.md`](../docs/research/16-recsys-eval-protocol.md). Upserts only `benchmarks.recsys` — never wipe or write to `beam1m1clean` / `locomoconv26*`.
 
+### Search
+
+Hybrid BM25 + dense ranking via `POST /retrieve/search`, plus optional graph channels (`entities` / `events` / `communities`, `expand=neighbors`). Flow: ingest docs (chunk+embed; LLM enrichment skipped by default) → optional structured catalog triples (`--ingest-graph`) → map `DOCID` markers to chunk ids → search with `profile_stages`. Gold matches chunk ids or `hit.id == doc_id`. Brain: `searchbenchsmoke` (any id must start with `searchbench`). Server must have `SEARCH_ENABLED=true`, `DATA_DB=postgresql`, `BRAIN_CREATION_ALLOWED=true`.
+
+```bash
+./search.sh smoke
+./search.sh evaluate --fusion rrf
+./search.sh download --name esci
+./search.sh download --name wands
+./search.sh evaluate --dataset data/search_esci.jsonl --brain searchbenchesci --run search-esci
+./search.sh --brain searchbenchwands evaluate --dataset data/search_wands.jsonl --run search-wands-passages-k50 --channels passages --k 50 --ks 5,10,20,50
+./search.sh --brain searchbenchwands evaluate --dataset data/search_wands.jsonl --run search-wands-passages-k50 --channels passages --k 50 --ks 5,10,20,50 --skip-ingest
+./search.sh --brain searchbenchwandsgraph evaluate --dataset data/search_wands.jsonl --run search-wandsgraph-communities-k50 --channels communities --k 50 --ks 5,10,20,50 --ingest-graph
+./search.sh evaluate --dataset data/search_esci.jsonl --brain searchbenchesci --ingest-graph --channels passages,entities,communities
+./search.sh evaluate --rerank plugin:cross-encoder
+./search.sh report --run <run_id>
+```
+
+Catalog downloads are a **subset** of Amazon ESCI (KDD Cup 2022, US Task 1 / small_version test) and WANDS (Wayfair). Default caps: 80 queries, 2000 products, 40 candidates/query. Frozen WANDS quality slice: `data/search_wands.jsonl` (66 queries / 2000 docs); download refuses overwrite. Gold is graded (ESCI E/S/C/I; WANDS Exact/Partial/Irrelevant). WANDS control is passages k=50 `rerank=none` on `searchbenchwands`, then `--skip-ingest`. Opt-in catalog graph is brain `searchbenchwandsgraph` only (`--ingest-graph`, `channels=communities`); ledger rows are an **architecture demo**, not a claim vs 0.823 / ESCI 0.500. `--ingest-graph` is refused on frozen `searchbenchwands` / `searchbenchesci74` / `searchbenchescies` / `searchbenchesciltr2`. Pass `--enrich` only if you want Scout/Architect on ingest. Use dedicated `searchbench*` brains — never `demorecsys`. Graph mapping is product `src/core/search/catalog_graph.py` (generic HAS events + CLASS/TYPE/ATTR hubs). Do not score recs HitRate as search.
+
+Metrics: Recall@{5,10,20}, nDCG@10, MRR; p50/p95 retrieve **excluding** embed RTT. No LLM judge. Protocol: [`docs/research/18-search-eval-protocol.md`](../docs/research/18-search-eval-protocol.md). Upserts only `benchmarks.search` — never wipe or write to `locomoconv*`, `beam*`, `demorecsys`.
+
 ### BEAM
 
 Typical flow: `download` → `ingest` → `evaluate` → `report` via `./beam.sh` or `.venv/bin/python -m beam`.
@@ -55,6 +78,7 @@ Typical flow: `download` → `ingest` → `evaluate` → `report` via `./beam.sh
 - LoCoMo harness upserts `benchmarks.locomo` via `write_report` → `update_reports_json` when report `status` is `ok`.
 - BEAM harness upserts `benchmarks.beam` the same way (field: `headline_score`, continuous `[0,1]`).
 - RecSys harness upserts `benchmarks.recsys` only (`hit_rate@K` / `recall@K`); it must not touch other suite keys.
+- Search harness upserts `benchmarks.search` only (`ndcg@10` / `recall@10` / `p50_retrieve_ms`); it must not touch other suite keys.
 - After any completed evaluate/report that produces a successful scored run, ensure the suite entry in `REPORTS.json` reflects it.
 - If you write or patch `runs/<id>/report.json` manually, update `REPORTS.json` yourself (same schema; upsert by `run_id` under the suite).
 - When adding a new suite, add a `benchmarks.<suite_id>` key (`name` + `leaderboard`) and upsert the same way.
