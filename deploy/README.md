@@ -60,7 +60,10 @@ nginx server file; do not expose port 80 beyond a trusted proxy without HTTPS.
 ## Backup and restore
 
 Backups default to `/srv/brainapi/backups` and are created with mode `0700`.
-They contain checksummed dumps and stopped-volume archives, but never secrets.
+They contain sensitive application data (including stored brain credentials),
+so encrypt and access-control the backup directory. The generated manifest
+contains only profile/version metadata, service names, restore order, and
+checksums; it never contains secrets.
 
 ```bash
 deploy/brainapi-backup backup --profile light \
@@ -74,7 +77,29 @@ deploy/brainapi-backup restore --profile light \
 Backup stops nginx, API, MCP, and workers before capture. Restore refuses a
 running stack, a profile/image mismatch, a checksum mismatch, or any non-empty
 target volume. Use a documented maintenance window and retain the generated
-manifest with the release artifacts.
+manifest with the release artifacts. Light backups include the system registry
+plus an individual custom-format dump for every `brain_*` PostgreSQL database.
+
+## Production validation
+
+The CI-only Compose override supplies a deterministic OpenAI-compatible model
+stub; it is not a production deployment file. It lets both profiles exercise
+the complete storage and gateway path without external model credentials:
+
+```bash
+docker compose -f deploy/docker-compose.light.yaml \
+  -f deploy/docker-compose.ci.yaml up -d --wait
+python scripts/production_smoke.py exercise --profile light \
+  --system-token "$BRAINPAT_TOKEN" --artifact-dir release-artifacts
+```
+
+After backup, clean-volume restore, and restart, run the same tool with
+`verify-restore`. CI retains the profile smoke, latency, restore, backup
+manifest, image audit, and SBOM evidence. The tag workflow downloads the exact
+commit's successful light and heavy artifacts and runs the release-readiness
+gate before any image can be published. Quality CI exports one `linux/amd64`
+candidate archive; the heavy runner loads that same archive, and the tag
+workflow publishes it unchanged after verifying its recorded image ID.
 
 ## Public documentation sandbox
 

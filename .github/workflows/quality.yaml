@@ -87,6 +87,7 @@ jobs:
       POSTGRES_USERNAME: brainapi
       BRAINPAT_TOKEN: ci-system-token
       BACKUP_DIR: ${{ github.workspace }}/.backup-artifacts
+      RELEASE_ARTIFACT_DIR: ${{ github.workspace }}/release-artifacts
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -96,6 +97,10 @@ jobs:
           if env -u REDIS_PASSWORD docker compose -f deploy/docker-compose.light.yaml config -q; then exit 1; fi
       - name: Build exact test image
         run: docker build --platform linux/amd64 --load -t "$BRAINAPI_IMAGE" .
+      - name: Export exact candidate image
+        run: |
+          mkdir -p "$RELEASE_ARTIFACT_DIR"
+          docker save "$BRAINAPI_IMAGE" | gzip -1 > "$RELEASE_ARTIFACT_DIR/brainapi-image.tar.gz"
       - name: Generate image SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -109,24 +114,36 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          format: json
+          output: trivy.json
       - name: Light profile smoke
         run: |
-          docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml up -d --wait
+          docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml up -d --wait
           curl --fail --retry 12 --retry-delay 5 http://localhost/health
+          python scripts/production_smoke.py exercise --profile light --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
       - name: Light backup and clean restore
         run: |
-          archive=$(deploy/brainapi-backup backup --profile light --project-name brainapi-ci --env-file deploy/env.light.example --backup-dir "$BACKUP_DIR" | tail -1)
+          archive=$(deploy/brainapi-backup backup --profile light --project-name brainapi-ci --env-file deploy/env.light.example --compose-file deploy/docker-compose.ci.yaml --backup-dir "$BACKUP_DIR" | tail -1)
           deploy/brainapi-backup verify --profile light --env-file deploy/env.light.example --archive "$archive"
-          docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml down --volumes
-          deploy/brainapi-backup restore --profile light --project-name brainapi-ci --env-file deploy/env.light.example --archive "$archive"
+          cp "$archive/manifest.json" "$RELEASE_ARTIFACT_DIR/backup-light-manifest.json"
+          docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml down --volumes
+          deploy/brainapi-backup restore --profile light --project-name brainapi-ci --env-file deploy/env.light.example --compose-file deploy/docker-compose.ci.yaml --archive "$archive"
           curl --fail --retry 12 --retry-delay 5 http://localhost/health
+          python scripts/production_smoke.py verify-restore --profile light --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
+      - name: Record exact-image security evidence
+        run: |
+          cp brainapi.spdx.json "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json"
+          python scripts/write_security_artifact.py --trivy trivy.json --sbom "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json" --image "$BRAINAPI_IMAGE" --output "$RELEASE_ARTIFACT_DIR/security.json"
       - name: Logs on failure
         if: failure()
-        run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml logs --no-color
+        run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml logs --no-color
       - name: Clean CI volumes
         if: always()
-        run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml down --volumes --remove-orphans
+        run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml down --volumes --remove-orphans
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: light-image-sbom
-          path: brainapi.spdx.json
+          name: light-production-validation
+          path: |
+            release-artifacts/
+            trivy.json

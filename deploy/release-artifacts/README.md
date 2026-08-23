@@ -17,3 +17,10 @@ must contain the following files produced against the exact candidate image:
 The public ledger must also contain a representative LongMemEval result and a
 WANDS representative Search row. LoCoMo and BEAM rows retain their explicit
 sample scopes and are not promoted into broader claims by this gate.
+
+`scripts/production_smoke.py exercise` produces profile-scoped smoke, latency,
+and pre-restore state evidence; `verify-restore` produces the matching restore
+report. `scripts/assemble_release_artifacts.py` combines successful light and
+heavy workflow artifacts. The tag-only publish workflow performs this assembly
+and runs the gate itself, in addition to requiring all quality and dedicated
+heavy-runner checks on the tagged commit.

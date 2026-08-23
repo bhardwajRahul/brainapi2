@@ -57,19 +57,31 @@ def _check_smoke(data: dict) -> None:
 
 
 def _check_latency(data: dict) -> None:
+    if "light" in data or "heavy" in data:
+        for profile in ("light", "heavy"):
+            if profile not in data:
+                raise RuntimeError(f"Latency results are missing the {profile} profile")
+            _check_latency_result(profile, data[profile])
+        return
+    _check_latency_result("release", data)
+
+
+def _check_latency_result(profile: str, data: dict) -> None:
     context = data.get("context", {})
     search = data.get("search", {})
     if float(context.get("p50_ms", float("inf"))) >= 1000:
-        raise RuntimeError("/retrieve/context p50 must be below 1000 ms")
+        raise RuntimeError(f"{profile} /retrieve/context p50 must be below 1000 ms")
     if int(context.get("online_llm_retrieval_loops", -1)) != 0:
-        raise RuntimeError("Context retrieval must not run an online LLM loop")
+        raise RuntimeError(f"{profile} context retrieval must not run an online LLM loop")
     if float(search.get("p50_ms", float("inf"))) >= 200:
-        raise RuntimeError("Default search p50 must be below 200 ms")
+        raise RuntimeError(f"{profile} default search p50 must be below 200 ms")
     if search.get("excludes_embed_query") is not True:
-        raise RuntimeError("Search latency must explicitly exclude embed.query")
+        raise RuntimeError(f"{profile} search latency must exclude embed.query")
     for surface, result in (("context", context), ("search", search)):
         if "p95_ms" not in result or "p99_ms" not in result:
-            raise RuntimeError(f"{surface} must record non-blocking p95 and p99")
+            raise RuntimeError(
+                f"{profile} {surface} must record non-blocking p95 and p99"
+            )
 
 
 def _check_restore(profile: str, data: dict) -> None:

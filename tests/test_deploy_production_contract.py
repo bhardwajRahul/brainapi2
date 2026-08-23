@@ -11,6 +11,9 @@ import pytest
 import yaml
 
 from deploy.backup_restore import verify_backup
+from scripts.check_release_readiness import _check_latency
+from scripts.openai_ci_stub import _embedding
+from scripts.production_smoke import _latency_summary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,9 +123,81 @@ def test_backup_manifest_verification_detects_tampering(tmp_path):
         verify_backup(tmp_path, "light")
 
 
+def test_light_backup_includes_per_brain_postgres_databases():
+    source = (DEPLOY / "backup_restore.py").read_text(encoding="utf-8")
+    assert "postgres-brains.tar.gz" in source
+    assert "brain_*.dump" in source
+
+
 def test_recommendation_openapi_surface_is_preview():
     from src.services.api.app import app
 
     schema = app.openapi()
     assert schema["paths"]["/retrieve/recommend"]["get"]["x-stability"] == "preview"
     assert schema["paths"]["/retrieve/recommend"]["post"]["x-stability"] == "preview"
+
+
+def test_production_smoke_percentiles_are_deterministic():
+    assert _latency_summary([1, 2, 3, 4, 5]) == {
+        "samples": 5,
+        "p50_ms": 3,
+        "p95_ms": 4.8,
+        "p99_ms": 4.96,
+    }
+
+
+def test_product_state_artifact_never_persists_a_brain_token():
+    source = (ROOT / "scripts" / "production_smoke.py").read_text(encoding="utf-8")
+    state_block = source.split('state = {', 1)[1].split('}', 1)[0]
+    assert '"brain_token"' not in state_block
+
+
+def test_release_latency_gate_requires_both_profiles():
+    result = {
+        "context": {
+            "p50_ms": 999,
+            "p95_ms": 1200,
+            "p99_ms": 1500,
+            "online_llm_retrieval_loops": 0,
+        },
+        "search": {
+            "p50_ms": 199,
+            "p95_ms": 250,
+            "p99_ms": 300,
+            "excludes_embed_query": True,
+        },
+    }
+    _check_latency({"light": result, "heavy": result})
+    with pytest.raises(RuntimeError, match="missing the heavy"):
+        _check_latency({"light": result})
+
+
+def test_ci_embedding_stub_is_deterministic_and_normalized():
+    first = _embedding("same input", dimensions=8)
+    assert first == _embedding("same input", dimensions=8)
+    assert first != _embedding("different input", dimensions=8)
+    assert sum(value * value for value in first) == pytest.approx(1.0)
+
+
+def test_release_workflow_enforces_artifact_gate_before_publish():
+    workflow = (ROOT / ".github" / "workflows" / "release.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "check_release_readiness.py gate-artifacts" in workflow
+    assert "needs: [validate-tag, verify-required-checks]" in workflow
+
+
+def test_mcp_has_only_one_lifespan_definition():
+    source = (ROOT / "src" / "services" / "mcp" / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert source.count("async def _lifespan") == 1
+
+
+def test_ci_profiles_enable_dense_search_without_online_llm():
+    override = yaml.safe_load((DEPLOY / "docker-compose.ci.yaml").read_text())
+    environment = override["x-ci-model-environment"]
+    assert environment["SEARCH_ENABLED"] == "true"
+    assert environment["SEARCH_USE_DENSE"] == "true"
+    assert environment["SEARCH_USE_BM25"] == "false"
+    assert environment["CONTEXT_PASSAGE_MODE"] == "dense"

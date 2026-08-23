@@ -73,12 +73,20 @@ def _load_env(path: Path) -> dict[str, str]:
 
 
 class Stack:
-    def __init__(self, profile: str, env_file: Path, project: str, dry_run: bool):
+    def __init__(
+        self,
+        profile: str,
+        env_file: Path,
+        project: str,
+        dry_run: bool,
+        compose_files: list[Path] | None = None,
+    ):
         self.profile = profile
         self.env_file = env_file.resolve()
         self.project = project
         self.dry_run = dry_run
-        self.compose_file = DEPLOY / f"docker-compose.{profile}.yaml"
+        self.compose_files = [DEPLOY / f"docker-compose.{profile}.yaml"]
+        self.compose_files.extend(path.resolve() for path in (compose_files or []))
         self.env = _load_env(self.env_file)
         self.env["BRAINAPI_ENV_FILE"] = str(self.env_file)
         self.base = [
@@ -88,9 +96,9 @@ class Stack:
             project,
             "--env-file",
             str(self.env_file),
-            "-f",
-            str(self.compose_file),
         ]
+        for compose_file in self.compose_files:
+            self.base.extend(["-f", str(compose_file)])
 
     def run(
         self,
@@ -157,6 +165,82 @@ def _write_stream(stack: Stack, args: list[str], destination: Path) -> None:
         return
     with destination.open("wb") as output:
         stack.run(args, stdout=output)
+
+
+def _dump_postgres_brain_databases(stack: Stack, destination: Path) -> None:
+    script = r'''
+set -eu
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+psql -U "$POSTGRES_USER" -d postgres -Atc \
+  "SELECT datname FROM pg_database WHERE datistemplate = false AND left(datname, 6) = 'brain_' ORDER BY datname" |
+while IFS= read -r database; do
+  test -n "$database" || continue
+  pg_dump -U "$POSTGRES_USER" -d "$database" --format=custom --file="$tmp/$database.dump"
+done
+tar -C "$tmp" -czf - .
+'''.strip()
+    _write_stream(
+        stack,
+        ["exec", "-T", "postgres", "sh", "-c", script],
+        destination,
+    )
+
+
+def _restore_postgres_brain_databases(
+    stack: Stack, archive: Path, pg_user: str
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="brainapi-postgres-restore-") as tmp:
+        tmp_path = Path(tmp)
+        if not stack.dry_run:
+            subprocess.run(
+                ["tar", "-C", str(tmp_path), "-xzf", str(archive)], check=True
+            )
+        dumps = sorted(tmp_path.glob("brain_*.dump"))
+        if stack.dry_run:
+            dumps = [tmp_path / "brain_example.dump"]
+        for dump in dumps:
+            database = dump.stem
+            if not database.replace("_", "").isalnum() or not database.startswith(
+                "brain_"
+            ):
+                raise RuntimeError(f"Invalid PostgreSQL brain dump name: {dump.name}")
+            stack.run(
+                ["exec", "-T", "postgres", "createdb", "-U", pg_user, database],
+                check=False,
+            )
+            if stack.dry_run:
+                stack.run(
+                    [
+                        "exec",
+                        "-T",
+                        "postgres",
+                        "pg_restore",
+                        "-U",
+                        pg_user,
+                        "-d",
+                        database,
+                        "--clean",
+                        "--if-exists",
+                    ]
+                )
+            else:
+                with dump.open("rb") as source:
+                    stack.run(
+                        [
+                            "exec",
+                            "-T",
+                            "postgres",
+                            "pg_restore",
+                            "-U",
+                            pg_user,
+                            "-d",
+                            database,
+                            "--clean",
+                            "--if-exists",
+                        ],
+                        stdin=source,
+                    )
 
 
 def _archive_volume(stack: Stack, key: str, destination: Path) -> None:
@@ -261,6 +345,9 @@ def backup(stack: Stack, backup_root: Path) -> Path:
                 ["exec", "-T", "postgres", "pg_dump", "-U", pg_user, "-d", pg_db, "--format=custom"],
                 destination / "postgres.dump",
             )
+            _dump_postgres_brain_databases(
+                stack, destination / "postgres-brains.tar.gz"
+            )
             stack.run(["exec", "-T", "redis", "sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" SAVE'])
             stack.run(["stop", "redis", "postgres"])
         else:
@@ -347,6 +434,9 @@ def restore(stack: Stack, backup_dir: Path) -> None:
         else:
             with (backup_dir / "postgres.dump").open("rb") as source:
                 stack.run(["exec", "-T", "postgres", "pg_restore", "-U", pg_user, "-d", pg_db, "--clean", "--if-exists"], stdin=source)
+        _restore_postgres_brain_databases(
+            stack, backup_dir / "postgres-brains.tar.gz", pg_user
+        )
     else:
         with tempfile.TemporaryDirectory(prefix="brainapi-neo4j-restore-") as tmp:
             tmp_path = Path(tmp)
@@ -372,6 +462,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-name", default="brainapi")
     parser.add_argument("--backup-dir", type=Path, default=Path(os.getenv("BACKUP_DIR", "/srv/brainapi/backups")))
     parser.add_argument("--archive", type=Path, help="Backup directory for verify/restore")
+    parser.add_argument(
+        "--compose-file",
+        action="append",
+        default=[],
+        type=Path,
+        help="Additional Compose override file; may be repeated.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -385,7 +482,13 @@ def main() -> int:
             verify_backup(args.archive.resolve(), args.profile)
             print(f"Verified {args.archive}")
             return 0
-        stack = Stack(args.profile, args.env_file, args.project_name, args.dry_run)
+        stack = Stack(
+            args.profile,
+            args.env_file,
+            args.project_name,
+            args.dry_run,
+            args.compose_file,
+        )
         if args.command == "backup":
             destination = backup(stack, args.backup_dir)
             print(destination)
