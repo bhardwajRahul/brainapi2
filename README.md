@@ -210,6 +210,8 @@ BrainAPI follows an **append-only philosophy**: nothing is deleted from the grap
 - **`accurate`** (default) — the full swarm runs: Scout extracts every entity, the Observations agent writes notes, and the Janitor validates and deduplicates the Architect's relationships.
 - **`lightweight`** — a faster, cheaper path that extracts only the most important entities and skips the heavier validation steps. Switch with `--pipeline lightweight` or `PIPELINE_MODE` in `.env`.
 
+Search (`GET|POST /retrieve/search`) is **off by default**. Set `SEARCH_ENABLED=true` (requires `DATA_DB=postgresql`) to register the hit-list API, write BM25 `tsvector` indexes, and use halfvec HNSW when embeddings are >2000-d. Default retrieval is both channels fused (`SEARCH_FUSION=rrf`). The search p50 SLO is **< 200 ms excluding `embed.query`** — ask for `profile_stages` to split embed RTT from retrieve. `/retrieve/context` stays dense ∪ ILIKE unless search is on and `CONTEXT_PASSAGE_MODE` is `hybrid` / `bm25` / `dense`.
+
 ---
 
 ## 🔎 Retrieving Knowledge
@@ -219,6 +221,7 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 | Endpoint                     | Method | What you get                                                                                                     |
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
 | `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — the matching graph triples plus historical context                |
+| `/retrieve/search`           | `GET`/`POST` | **Ranked search hits** (opt-in: `SEARCH_ENABLED=true`) — passages (BM25 ∪ dense) by default; optional `entities` / `events` / `communities` channels and `expand=neighbors`; p50 < 200 ms excluding embed |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
 | `/retrieve/entity/synergies` | `GET`  | **Similar things** related to a given one — effectively a recommendation algorithm over the graph                |
 

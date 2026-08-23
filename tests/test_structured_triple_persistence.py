@@ -85,6 +85,91 @@ class TripleConversionTests(unittest.TestCase):
         self.assertIn(("alice", "person"), entities)
         self.assertIn(("purchase", "event", "01/01/2024"), entities)
 
+    def test_direct_has_is_one_edge_not_event(self):
+        from src.core.agents.architect_agent import ingestion_triples_to_relationships
+        from src.services.api.constants.requests import IngestionTripleSet
+
+        triple = IngestionTripleSet(
+            subject={"name": "bed", "type": "ENTITY", "uuid": "0"},
+            subj_event={"name": "HAS", "uuid": "rel-has-1"},
+            object={"name": "rubberwood", "type": "ATTR", "uuid": "hub-attr-rubberwood"},
+        )
+        relationships, entities = ingestion_triples_to_relationships([triple], [])
+        self.assertEqual(len(relationships), 1)
+        self.assertEqual(relationships[0].tail.uuid, "0")
+        self.assertEqual(relationships[0].name, "HAS")
+        self.assertEqual(relationships[0].tip.uuid, "hub-attr-rubberwood")
+        self.assertEqual(relationships[0].tip.type, "ATTR")
+        self.assertNotIn(("has", "event", ""), entities)
+        self.assertNotIn(("has", "event"), entities)
+
+    def test_has_wrapper_without_happened_at_collapses(self):
+        from src.core.agents.architect_agent import ingestion_triples_to_relationships
+        from src.services.api.constants.requests import IngestionTripleSet
+
+        triple = IngestionTripleSet(
+            subject={"name": "bed", "type": "ENTITY", "uuid": "0"},
+            subj_event={"name": "HAS", "uuid": "rel-1"},
+            event={"name": "HAS", "type": "EVENT", "uuid": "evt-has"},
+            event_obj={"name": "HAS", "uuid": "rel-2"},
+            object={"name": "modern", "type": "ATTR", "uuid": "hub-modern"},
+        )
+        relationships, entities = ingestion_triples_to_relationships([triple], [])
+        self.assertEqual(len(relationships), 1)
+        self.assertEqual(relationships[0].tail.uuid, "0")
+        self.assertEqual(relationships[0].tip.uuid, "hub-modern")
+        self.assertEqual(relationships[0].name, "HAS")
+        self.assertTrue(
+            all(getattr(rel.tail, "type", "").upper() != "EVENT" for rel in relationships)
+        )
+        self.assertTrue(
+            all(getattr(rel.tip, "type", "").upper() != "EVENT" for rel in relationships)
+        )
+
+    def test_has_event_with_happened_at_stays_two_edges(self):
+        from src.core.agents.architect_agent import ingestion_triples_to_relationships
+        from src.services.api.constants.requests import IngestionTripleSet
+
+        triple = IngestionTripleSet(
+            subject={"name": "u1", "type": "USER", "uuid": "user-1"},
+            subj_event={"name": "HAS", "uuid": "rel-1"},
+            event={
+                "name": "HAS",
+                "type": "EVENT",
+                "uuid": "evt-dated",
+                "happened_at": "01/02/2024",
+            },
+            event_obj={"name": "HAS", "uuid": "rel-2"},
+            object={"name": "sku-1", "type": "ENTITY", "uuid": "sku-1"},
+        )
+        relationships, _ = ingestion_triples_to_relationships([triple], [])
+        self.assertEqual(len(relationships), 2)
+        self.assertEqual(relationships[0].tip.uuid, "evt-dated")
+        self.assertEqual(relationships[1].tail.uuid, "evt-dated")
+
+    def test_direct_prefers_is_one_edge(self):
+        from src.core.agents.architect_agent import ingestion_triples_to_relationships
+        from src.services.api.constants.requests import IngestionTripleSet
+
+        triple = IngestionTripleSet(
+            subject={"name": "u01", "type": "USER", "uuid": "user:u01"},
+            subj_event={
+                "name": "PREFERS",
+                "uuid": "rel-pref-1",
+                "amount": 0.2,
+                "properties": {"facet": "style", "value": "70s"},
+            },
+            object={"name": "70s", "type": "ATTR", "uuid": "hub:attr:70s"},
+        )
+        relationships, entities = ingestion_triples_to_relationships([triple], [])
+        self.assertEqual(len(relationships), 1)
+        self.assertEqual(relationships[0].tail.uuid, "user:u01")
+        self.assertEqual(relationships[0].name, "PREFERS")
+        self.assertEqual(relationships[0].tip.uuid, "hub:attr:70s")
+        self.assertEqual(relationships[0].amount, 0.2)
+        self.assertNotIn(("prefers", "event", ""), entities)
+        self.assertNotIn(("prefers", "event"), entities)
+
 
 class StructuredTriplePersistenceTests(unittest.TestCase):
     def test_triple_only_persists_without_llm(self):

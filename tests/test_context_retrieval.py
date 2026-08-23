@@ -3,6 +3,7 @@ import os
 import sys
 import types
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -41,6 +42,7 @@ for key, value in ENV_DEFAULTS.items():
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.constants.embeddings import Vector
+from src.constants.data import TextChunk
 from src.constants.kg import Node, Predicate
 from src.core.search.entity_info import EventSynergyRetriever
 from src.services.api.constants.requests import GetContextRequestBody
@@ -481,6 +483,100 @@ class EventSynergyHardeningTests(unittest.TestCase):
                 branch_factor=1,
             )
             self.assertLessEqual(work[0], 3)
+
+
+class ContextPassageModeTests(unittest.TestCase):
+    def test_search_off_keeps_ilike_lexical_leg(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_data.return_value = [
+            Vector(id="d", metadata={"resource_id": "dense-1"}, distance=0.2)
+        ]
+        ilike_chunk = TextChunk(id="ilike-1", text="ilike hit about license")
+        mock_data = MagicMock()
+        mock_data.search.return_value = SimpleNamespace(text_chunks=[ilike_chunk])
+        mock_data.get_text_chunks_by_ids.return_value = (
+            [TextChunk(id="dense-1", text="dense body")],
+            [],
+        )
+
+        with (
+            patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(retrieve_mod, "vector_search", mock_vs),
+            patch.object(retrieve_mod, "data_adapter", mock_data),
+            patch.object(retrieve_mod.config, "search_enabled", False),
+            patch.object(retrieve_mod.config, "context_passage_mode", "hybrid"),
+        ):
+            hits = retrieve_mod._retrieve_passages("license", "brain-a", limit=8)
+
+        mock_data.search.assert_called()
+        mock_data.search_bm25.assert_not_called()
+        self.assertTrue(any(item[0] == "ilike-1" for item in hits))
+
+    def test_search_on_hybrid_uses_bm25(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_data.return_value = [
+            Vector(id="d", metadata={"resource_id": "dense-1"}, distance=0.2)
+        ]
+        bm25_chunk = TextChunk(id="bm25-1", text="bm25 hit about license")
+        mock_data = MagicMock()
+        mock_data.search_bm25.return_value = [(bm25_chunk, 5.0)]
+        mock_data.get_text_chunks_by_ids.return_value = (
+            [TextChunk(id="dense-1", text="dense body")],
+            [],
+        )
+
+        with (
+            patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(retrieve_mod, "vector_search", mock_vs),
+            patch.object(retrieve_mod, "data_adapter", mock_data),
+            patch.object(retrieve_mod.config, "search_enabled", True),
+            patch.object(retrieve_mod.config, "context_passage_mode", "hybrid"),
+        ):
+            hits = retrieve_mod._retrieve_passages("license", "brain-a", limit=8)
+
+        mock_data.search_bm25.assert_called()
+        mock_data.search.assert_not_called()
+        ids = [item[0] for item in hits]
+        self.assertIn("bm25-1", ids)
+        self.assertIn("dense-1", ids)
+
+    def test_search_on_ilike_freezes_old_lexical_leg(self):
+        from src.services.api.controllers import retrieve as retrieve_mod
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.embed_text.return_value = Vector(
+            id="q", embeddings=[0.1], metadata={}
+        )
+        mock_vs = MagicMock()
+        mock_vs.search_data.return_value = []
+        ilike_chunk = TextChunk(id="ilike-2", text="legacy ilike")
+        mock_data = MagicMock()
+        mock_data.search.return_value = SimpleNamespace(text_chunks=[ilike_chunk])
+
+        with (
+            patch.object(retrieve_mod, "embeddings_adapter", mock_embeddings),
+            patch.object(retrieve_mod, "vector_search", mock_vs),
+            patch.object(retrieve_mod, "data_adapter", mock_data),
+            patch.object(retrieve_mod.config, "search_enabled", True),
+            patch.object(retrieve_mod.config, "context_passage_mode", "ilike"),
+        ):
+            hits = retrieve_mod._retrieve_passages("license", "brain-a", limit=8)
+
+        mock_data.search.assert_called()
+        mock_data.search_bm25.assert_not_called()
+        self.assertEqual(hits[0][0], "ilike-2")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,11 @@ class DataAdapter:
         """
         return self.data.search(text=text, brain_id=brain_id)
 
+    def search_bm25(
+        self, text: str, brain_id: str = "default", limit: int = 10
+    ) -> List[Tuple[TextChunk, float]]:
+        return self.data.search_bm25(text=text, brain_id=brain_id, limit=limit)
+
     def get_text_chunks_by_ids(
         self, ids: List[str], with_observations: bool, brain_id: str = "default"
     ) -> Tuple[List[TextChunk], List[Observation]]:

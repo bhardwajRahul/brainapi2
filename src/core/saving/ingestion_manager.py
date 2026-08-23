@@ -12,14 +12,16 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from src.adapters.embeddings import EmbeddingsAdapter
 from src.adapters.graph import GraphAdapter
 from src.adapters.embeddings import VectorStoreAdapter
+from src.constants.agents import ArchitectAgentRelationship
+from src.constants.embeddings import Vector
 from src.core.agents.scout_agent import ScoutEntity
-from src.core.agents.architect_agent import ArchitectAgentRelationship
 from src.core.saving.identity import (
     stable_flow_key,
     stable_node_id,
     stable_relationship_id,
     stable_uuid,
 )
+from src.core.search.catalog_graph import node_embed_text
 
 __all__ = [
     "IngestionManager",
@@ -53,6 +55,16 @@ class IngestionManager:
         self.kg = graph_adapter
         self.resolved_cache = {}
         self.metadata = {}
+        self._text_embed_cache: dict[str, list[float]] = {}
+
+    def _embed_text_cached(self, text: str) -> Vector:
+        cached = self._text_embed_cache.get(text)
+        if cached is not None:
+            return Vector(id="", embeddings=list(cached), metadata={})
+        vector = self.embeddings.embed_text(text)
+        if vector.embeddings:
+            self._text_embed_cache[text] = list(vector.embeddings)
+        return vector
 
     def process_node_vectors(self, node_data: ScoutEntity, brain_id):
         """
@@ -70,12 +82,19 @@ class IngestionManager:
         Returns:
             The node's UUID.
         """
-        if node_data.name in self.resolved_cache:
+        text, cache_key = node_embed_text(node_data)
+        if cache_key in self.resolved_cache:
             return node_data.uuid
 
-        v_sub = self.embeddings.embed_text(node_data.name)
+        v_sub = self._embed_text_cached(text)
+        labels = [node_data.type]
+        extra = (node_data.properties or {}).get("catalog_labels") or []
+        for item in extra:
+            label = str(item).strip()
+            if label and label not in labels:
+                labels.append(label)
         v_sub.metadata = {
-            "labels": [node_data.type],
+            "labels": labels,
             "name": node_data.name,
             "uuid": node_data.uuid,
         }
@@ -87,7 +106,7 @@ class IngestionManager:
                 **(node_data.properties or {}),
                 "v_id": v_ids[0],
             }
-            self.resolved_cache[node_data.name] = v_ids[0]
+            self.resolved_cache[cache_key] = v_ids[0]
             return node_data.uuid
         else:
             print("[ ! ]Node not embedded:", node_data)
@@ -118,7 +137,7 @@ class IngestionManager:
             )
         text_to_embed = (rel_data.description or "").strip() or rel_data.name
         if text_to_embed:
-            v_rel = self.embeddings.embed_text(text_to_embed)
+            v_rel = self._embed_text_cached(text_to_embed)
             v_rel.metadata = {
                 **(self.metadata or {}),
                 "uuid": rel_data.uuid,

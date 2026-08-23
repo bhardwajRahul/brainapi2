@@ -107,9 +107,29 @@ class IngestionTripleSet(BaseModel):
         None,
         description="The optional event predicate of the triple.",
     )
-    event: RequestPartialNode
-    event_obj: RequestPartialPredicate
+    event: Optional[RequestPartialNode] = Field(
+        None,
+        description="The optional event node. Omit for a direct subject-predicate-object edge.",
+    )
+    event_obj: Optional[RequestPartialPredicate] = Field(
+        None,
+        description="The optional event-to-object predicate. Paired with event when present.",
+    )
     object: RequestPartialNode
+
+    @model_validator(mode="after")
+    def require_event_pair_or_direct_edge(self):
+        has_event = self.event is not None
+        has_event_obj = self.event_obj is not None
+        if has_event != has_event_obj:
+            raise ValueError("event and event_obj must both be set or both omitted")
+        if has_event:
+            return self
+        if not self.subject or not self.subj_event:
+            raise ValueError(
+                "direct triples require subject, subj_event, and object"
+            )
+        return self
 
 
 class PartialNodeFilter(BaseModel):
@@ -469,3 +489,74 @@ class GetContextResponse(BaseModel):
     paths: Optional[List[dict[str, Any]]] = None
     topics: Optional[List[dict[str, Any]]] = None
     stage_timings: Optional[dict[str, Any]] = None
+
+
+class SearchRequestBody(BaseModel):
+    query: str
+    brain_id: str = "default"
+    k: int = Field(10, ge=1, le=200)
+    channels: List[str] = Field(default_factory=lambda: ["passages"])
+    node_labels: Optional[List[str]] = None
+    community_labels: Optional[List[str]] = None
+    expand: Literal["none", "neighbors"] = "none"
+    fusion: Optional[Literal["rrf", "cc"]] = None
+    fusion_alpha: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    rerank: Optional[str] = Field(
+        default=None,
+        description="none or plugin:<name>. Unknown plugin names return 400.",
+    )
+    mode: Literal["default", "catalog"] = "default"
+    profile_stages: bool = False
+    extras: Optional[Dict[str, str]] = None
+    target: Optional[str] = None
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def empty_target(cls, value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("extras", mode="before")
+    @classmethod
+    def coerce_extras_filter(cls, value):
+        if value is None or value == {}:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("extras must be an object of string keys and values")
+        return {
+            str(key): str(item)
+            for key, item in value.items()
+            if item is not None
+        } or None
+
+
+class SearchHitScores(BaseModel):
+    bm25: Optional[float] = None
+    dense: Optional[float] = None
+    rrf: Optional[float] = None
+    cc: Optional[float] = None
+    rerank: Optional[float] = None
+    plugin: Optional[dict[str, float]] = None
+    graph: Optional[float] = None
+    personalize: Optional[float] = None
+
+
+class SearchHit(BaseModel):
+    id: str
+    channel: str
+    score: float
+    scores: SearchHitScores
+    snippet: str
+    labels: List[str] = Field(default_factory=list)
+    extras: Optional[dict[str, Any]] = None
+    node_id: Optional[str] = None
+
+
+class SearchResponse(BaseModel):
+    hits: List[SearchHit]
+    stage_timings: Optional[dict[str, Any]] = None
+    channel_lists: Optional[dict[str, list[str]]] = None
+    facets: Optional[dict[str, dict[str, int]]] = None
+    node_ids: List[str] = Field(default_factory=list)

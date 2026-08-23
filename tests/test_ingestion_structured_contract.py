@@ -51,6 +51,31 @@ class StructuredRequestValidationTests(unittest.TestCase):
         self.assertIsNone(body.anchor)
         self.assertIsNone(body.text)
 
+    def test_direct_has_triple_validates(self):
+        from src.services.api.constants.requests import IngestionTripleSet
+
+        triple = IngestionTripleSet(
+            subject={"name": "bed", "type": "ENTITY", "uuid": "0"},
+            subj_event={"name": "HAS", "uuid": "rel-1"},
+            object={"name": "navy", "type": "ATTR", "uuid": "hub-navy"},
+        )
+        self.assertIsNone(triple.event)
+        self.assertIsNone(triple.event_obj)
+        prefers = IngestionTripleSet(
+            subject={"name": "u01", "type": "USER", "uuid": "user:u01"},
+            subj_event={"name": "PREFERS", "uuid": "rel-pref"},
+            object={"name": "70s", "type": "ATTR", "uuid": "hub:attr:70s"},
+        )
+        self.assertIsNone(prefers.event)
+        self.assertEqual(prefers.subj_event.name, "PREFERS")
+        with self.assertRaises(ValidationError):
+            IngestionTripleSet(
+                subject={"name": "bed", "type": "ENTITY", "uuid": "0"},
+                subj_event={"name": "HAS"},
+                event={"name": "HAS", "type": "EVENT"},
+                object={"name": "navy", "type": "ATTR"},
+            )
+
     def test_string_anchor_is_rejected(self):
         from src.services.api.constants.requests import IngestionStructuredRequestBody
 

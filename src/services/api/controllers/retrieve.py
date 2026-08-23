@@ -26,6 +26,12 @@ from src.core.search.fact_filter import (
     personalized_pagerank,
     reciprocal_rank_fusion,
 )
+from src.core.search.hybrid import (
+    collect_bm25_passages,
+    collect_dense_passages,
+    collect_ilike_passages,
+    fuse_passage_lists,
+)
 from src.core.search.relationships import search_relationships
 from src.lib.tracing.profiler import profile_request, profile_stage
 from src.utils.vector_search import VectorSearchFacade
@@ -43,6 +49,7 @@ from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
+from src.config import config
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -1681,45 +1688,52 @@ def _retrieve_passages(
     text: str, brain_id: str, *, limit: int
 ) -> list[tuple[str, float, str]]:
     """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
+    mode = (
+        config.context_passage_mode if config.search_enabled else "ilike"
+    )
+    use_dense = mode in ("hybrid", "dense", "ilike")
+    use_bm25 = mode in ("hybrid", "bm25")
+    use_ilike = mode == "ilike"
     with profile_stage("passages.retrieve", blocking=True, queries=1):
-        with profile_stage("embed.query"):
-            text_embeddings = embeddings_adapter.embed_text(text)
-        with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
-            vector_hits = vector_search.search_data(
-                text_embeddings.embeddings,
-                brain_id=brain_id,
-                k=max(limit, _PASSAGE_K),
-            )
         vector_ids: list[str] = []
-        id_to_text: dict[str, str] = {}
         id_to_distance: dict[str, float] = {}
-        for vector in vector_hits:
-            meta = vector.metadata or {}
-            resource_id = meta.get("resource_id") or getattr(vector, "id", None)
-            if not resource_id:
-                continue
-            resource_id = str(resource_id)
-            vector_ids.append(resource_id)
-            id_to_distance[resource_id] = (
-                float(vector.distance)
-                if vector.distance is not None
-                else float("inf")
-            )
+        if use_dense:
+            with profile_stage("embed.query"):
+                text_embeddings = embeddings_adapter.embed_text(text)
+            with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
+                vector_ids, id_to_distance = collect_dense_passages(
+                    vector_search,
+                    text_embeddings.embeddings,
+                    brain_id,
+                    max(limit, _PASSAGE_K),
+                )
 
         keyword_ids: list[str] = []
-        with profile_stage("data.keyword_search"):
-            try:
-                search_result = data_adapter.search(text, brain_id)
-                for chunk in getattr(search_result, "text_chunks", None) or []:
-                    chunk_id = str(getattr(chunk, "id", "") or "")
-                    if not chunk_id:
-                        continue
-                    keyword_ids.append(chunk_id)
-                    id_to_text[chunk_id] = getattr(chunk, "text", "") or ""
-            except Exception:
-                pass
+        id_to_text: dict[str, str] = {}
+        if use_bm25:
+            with profile_stage("data.bm25_search"):
+                try:
+                    keyword_ids, _, id_to_text = collect_bm25_passages(
+                        data_adapter,
+                        text,
+                        brain_id,
+                        max(limit, _PASSAGE_K),
+                    )
+                except Exception:
+                    pass
+        elif use_ilike:
+            with profile_stage("data.keyword_search"):
+                try:
+                    keyword_ids, id_to_text = collect_ilike_passages(
+                        data_adapter, text, brain_id
+                    )
+                except Exception:
+                    pass
 
-        fused = reciprocal_rank_fusion([vector_ids, keyword_ids])
+        fused = fuse_passage_lists(
+            vector_ids if use_dense else [],
+            keyword_ids,
+        )
         ranked_ids = [item for item, _ in fused[:limit]]
         missing = [cid for cid in ranked_ids if cid not in id_to_text]
         if missing:

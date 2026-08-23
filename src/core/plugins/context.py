@@ -53,6 +53,8 @@ class PluginContext:
         self.config = config
         self._routers: list[tuple["APIRouter", dict[str, Any]]] = []
         self._event_handlers: dict[str, list[Callable]] = {}
+        self._search_retrievers: dict[str, Callable] = {}
+        self._search_rerankers: dict[str, Callable] = {}
 
     @classmethod
     def _build_adapters(cls) -> PluginAdapters:
@@ -133,3 +135,15 @@ class PluginContext:
 
     def add_event_handler(self, event: str, handler: Callable) -> None:
         self._event_handlers.setdefault(event, []).append(handler)
+
+    def register_search_retriever(self, name: str, fn: Callable) -> None:
+        from src.core.search.hooks import register_search_retriever
+
+        register_search_retriever(name, fn)
+        self._search_retrievers[name] = fn
+
+    def register_search_reranker(self, name: str, fn: Callable) -> None:
+        from src.core.search.hooks import register_search_reranker
+
+        register_search_reranker(name, fn)
+        self._search_rerankers[name] = fn

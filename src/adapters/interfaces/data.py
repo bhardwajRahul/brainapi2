@@ -53,6 +53,13 @@ class DataClient(ABC):
         """
         raise NotImplementedError("search method not implemented")
 
+    def search_bm25(
+        self, text: str, brain_id: str, limit: int = 10
+    ) -> List[Tuple[TextChunk, float]]:
+        raise NotImplementedError(
+            "search_bm25 requires SEARCH_ENABLED=true and DATA_DB=postgresql"
+        )
+
     @abstractmethod
     def get_text_chunks_by_ids(
         self, ids: List[str], with_observations: bool, brain_id: str

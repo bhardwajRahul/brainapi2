@@ -21,6 +21,8 @@ from src.services.api.constants.requests import (
     RetrieveNeighborsWithIdentificationParamsRequestBody,
     RetrieveRequestResponse,
     RetrieveNeighborsRequestResponse,
+    SearchRequestBody,
+    SearchResponse,
 )
 from src.services.api.controllers.retrieve import (
     retrieve_neighbors as retrieve_neighbors_controller,
@@ -33,6 +35,7 @@ from src.services.api.controllers.kg import get_hops as get_hops_controller
 from src.services.api.controllers.retrieve import (
     retrieve_data as retrieve_data_controller,
 )
+from src.services.api.controllers.search import search as search_controller
 from src.services.api.controllers.structured_data import (
     get_structured_data_by_id as get_structured_data_by_id_controller,
     get_structured_data_list as get_structured_data_list_controller,
@@ -592,6 +595,83 @@ async def post_recommend(
         body.include_attribute_pref,
         body.behavior_weights,
     )
+
+
+@retrieve_router.get(path="/search", response_model=SearchResponse)
+async def get_search(
+    query: str = Query(..., description="The search query."),
+    k: int = Query(10, ge=1, le=200, description="Number of hits to return."),
+    channels: Optional[str] = Query(
+        "passages",
+        description=(
+            "Comma-separated channels: passages, entities, events, "
+            "communities, and/or plugin:<name>."
+        ),
+    ),
+    node_labels: Optional[str] = Query(
+        None,
+        description="Comma-separated node labels to filter the entities channel.",
+    ),
+    community_labels: Optional[str] = Query(
+        None,
+        description="Comma-separated hub labels for the communities channel.",
+    ),
+    expand: Literal["none", "neighbors"] = Query(
+        "none",
+        description="Optional 1-hop expansion from graph channel seeds.",
+    ),
+    fusion: Optional[Literal["rrf", "cc"]] = Query(
+        None, description="Fusion override. Default is SEARCH_FUSION."
+    ),
+    rerank: Optional[str] = Query(
+        None,
+        description="none or plugin:<name>. Unknown plugin names return 400.",
+    ),
+    target: Optional[str] = Query(
+        None,
+        description="Optional USER uuid or id for query-gated rerank of retrieved hits.",
+    ),
+    profile_stages: bool = Query(False),
+    brain_id: str = Depends(get_brain_id),
+):
+    channel_list = [
+        item.strip()
+        for item in (channels or "passages").split(",")
+        if item.strip()
+    ] or ["passages"]
+    node_label_list = [
+        item.strip()
+        for item in (node_labels or "").split(",")
+        if item.strip()
+    ] or None
+    community_label_list = [
+        item.strip()
+        for item in (community_labels or "").split(",")
+        if item.strip()
+    ] or None
+    request = SearchRequestBody(
+        query=query,
+        k=k,
+        channels=channel_list,
+        node_labels=node_label_list,
+        community_labels=community_label_list,
+        expand=expand,
+        fusion=fusion,
+        rerank=rerank,
+        target=target,
+        profile_stages=profile_stages,
+        brain_id=brain_id,
+    )
+    return await search_controller(request)
+
+
+@retrieve_router.post(path="/search", response_model=SearchResponse)
+async def post_search(
+    body: SearchRequestBody,
+    brain_id: str = Depends(get_brain_id),
+):
+    body.brain_id = brain_id or body.brain_id
+    return await search_controller(body)
 
 
 @retrieve_router.get(path="/entity/status")

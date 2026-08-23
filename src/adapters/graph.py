@@ -355,6 +355,26 @@ class GraphAdapter:
             brain_id, limit, skip, node_labels, node_uuids, query_text
         )
 
+    def search_nodes_bm25(
+        self,
+        query_text: str,
+        brain_id: str = "default",
+        *,
+        limit: int = 10,
+        node_labels: Optional[list[str]] = None,
+        node_uuids: Optional[list[str]] = None,
+    ):
+        method = getattr(self.graph, "search_nodes_bm25", None)
+        if method is None:
+            return []
+        return method(
+            query_text,
+            brain_id,
+            limit=limit,
+            node_labels=node_labels,
+            node_uuids=node_uuids,
+        )
+
     def deprecate_relationship(
         self,
         subject: Node,

@@ -16,7 +16,7 @@ import psycopg2
 import psycopg2.extras
 
 from src.adapters.interfaces.data import DataClient, SearchResult
-from src.config import config
+from src.config import SEARCH_FTS_REGCONFIGS, config
 from src.constants.data import (
     Brain,
     KGChanges,
@@ -100,6 +100,126 @@ CREATE INDEX IF NOT EXISTS idx_data_kg_changes_timestamp
     ON data_kg_changes (timestamp DESC);
 """
 
+_SEARCH_DDL = """
+ALTER TABLE data_text_chunks
+    ADD COLUMN IF NOT EXISTS search_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', coalesce(text, ''))) STORED;
+ALTER TABLE data_text_chunks
+    ADD COLUMN IF NOT EXISTS search_len integer
+    GENERATED ALWAYS AS (
+        GREATEST(length(to_tsvector('english', coalesce(text, ''))), 0)
+    ) STORED;
+CREATE INDEX IF NOT EXISTS idx_data_text_chunks_search_tsv
+    ON data_text_chunks USING gin (search_tsv);
+"""
+
+
+def _search_alt_ddl(regconfig: str) -> str:
+    if regconfig not in SEARCH_FTS_REGCONFIGS:
+        raise ValueError(f"Unsupported FTS regconfig {regconfig!r}")
+    return f"""
+ALTER TABLE data_text_chunks
+    ADD COLUMN IF NOT EXISTS search_tsv_alt tsvector
+    GENERATED ALWAYS AS (to_tsvector('{regconfig}', coalesce(text, ''))) STORED;
+ALTER TABLE data_text_chunks
+    ADD COLUMN IF NOT EXISTS search_len_alt integer
+    GENERATED ALWAYS AS (
+        GREATEST(length(to_tsvector('{regconfig}', coalesce(text, ''))), 0)
+    ) STORED;
+CREATE INDEX IF NOT EXISTS idx_data_text_chunks_search_tsv_alt
+    ON data_text_chunks USING gin (search_tsv_alt);
+"""
+
+
+def _bm25_sql(
+    regconfig: str,
+    tsv_col: str,
+    len_col: str,
+    *,
+    query_match: str | None = None,
+) -> str:
+    if tsv_col not in {"search_tsv", "search_tsv_alt"}:
+        raise ValueError(f"Unsupported tsv column {tsv_col!r}")
+    if len_col not in {"search_len", "search_len_alt"}:
+        raise ValueError(f"Unsupported len column {len_col!r}")
+    if regconfig not in SEARCH_FTS_REGCONFIGS and regconfig != "english":
+        raise ValueError(f"Unsupported FTS regconfig {regconfig!r}")
+    if query_match is None:
+        query_match = "or" if tsv_col == "search_tsv_alt" else "and"
+    if query_match not in {"and", "or"}:
+        raise ValueError(f"Unsupported BM25 query_match {query_match!r}")
+    if query_match == "and":
+        match_sql = f"c.{tsv_col} @@ plainto_tsquery('{regconfig}', %s)"
+    else:
+        match_sql = "TRUE"
+    return f"""
+                    WITH query_lexemes AS (
+                        SELECT unnest(tsvector_to_array(to_tsvector('{regconfig}', %s)))
+                            AS lexeme
+                    ),
+                    coll AS (
+                        SELECT
+                            COUNT(*)::double precision AS n_docs,
+                            COALESCE(
+                                AVG(GREATEST({len_col}, 1)),
+                                1
+                            )::double precision AS avgdl
+                        FROM data_text_chunks
+                    ),
+                    idf AS (
+                        SELECT
+                            s.word AS lexeme,
+                            ln(
+                                1.0 + (coll.n_docs - s.ndoc + 0.5)
+                                / (s.ndoc + 0.5)
+                            ) AS idf
+                        FROM ts_stat(
+                            'SELECT {tsv_col} FROM data_text_chunks'
+                        ) AS s
+                        CROSS JOIN coll
+                        WHERE s.word IN (SELECT lexeme FROM query_lexemes)
+                    ),
+                    docs AS (
+                        SELECT
+                            c.id,
+                            c.document,
+                            c.text,
+                            GREATEST(c.{len_col}, 1)::double precision AS dl,
+                            lex.lexeme,
+                            COALESCE(
+                                array_length(lex.positions, 1),
+                                1
+                            )::double precision AS tf
+                        FROM data_text_chunks c
+                        CROSS JOIN LATERAL unnest(c.{tsv_col})
+                            AS lex(lexeme, positions)
+                        WHERE {match_sql}
+                          AND lex.lexeme IN (SELECT lexeme FROM query_lexemes)
+                    )
+                    SELECT
+                        d.id,
+                        d.document,
+                        d.text,
+                        SUM(
+                            COALESCE(i.idf, 0)
+                            * (d.tf * (%s + 1.0))
+                            / (
+                                d.tf
+                                + %s * (
+                                    1.0 - %s
+                                    + %s * d.dl
+                                    / NULLIF(c.avgdl, 0)
+                                )
+                            )
+                        ) AS bm25
+                    FROM docs d
+                    CROSS JOIN coll c
+                    LEFT JOIN idf i ON i.lexeme = d.lexeme
+                    GROUP BY d.id, d.document, d.text
+                    ORDER BY bm25 DESC, d.id ASC
+                    LIMIT %s
+                    """
+
 
 def _ilike_pattern(query_text: str) -> str:
     escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -130,6 +250,8 @@ class PostgreSQLDataClient(DataClient):
         self._lock = threading.Lock()
         self._system_initialized = False
         self._initialized_brains: set[str] = set()
+        self._search_ready_brains: set[str] = set()
+        self._search_alt_brains: set[str] = set()
 
     @contextmanager
     def _system_connection(self) -> Iterator[psycopg2.extensions.connection]:
@@ -159,17 +281,47 @@ class PostgreSQLDataClient(DataClient):
             self._system_initialized = True
 
     def _ensure_brain_schema(self, brain_id: str) -> None:
-        if brain_id in self._initialized_brains:
+        alt_regconfig = config.search_fts_regconfig_for_brain(brain_id)
+        needs_base = brain_id not in self._initialized_brains
+        needs_search = (
+            config.search_enabled and brain_id not in self._search_ready_brains
+        )
+        needs_alt = (
+            config.search_enabled
+            and alt_regconfig is not None
+            and brain_id not in self._search_alt_brains
+        )
+        if not needs_base and not needs_search and not needs_alt:
             return
         with self._lock:
-            if brain_id in self._initialized_brains:
+            alt_regconfig = config.search_fts_regconfig_for_brain(brain_id)
+            needs_base = brain_id not in self._initialized_brains
+            needs_search = (
+                config.search_enabled and brain_id not in self._search_ready_brains
+            )
+            needs_alt = (
+                config.search_enabled
+                and alt_regconfig is not None
+                and brain_id not in self._search_alt_brains
+            )
+            if not needs_base and not needs_search and not needs_alt:
                 return
             ensure_brain_database(brain_id)
             with borrow(get_brain_pool(brain_id)) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(_BRAIN_DDL)
+                    if needs_base:
+                        cur.execute(_BRAIN_DDL)
+                    if needs_search:
+                        cur.execute(_SEARCH_DDL)
+                    if needs_alt and alt_regconfig is not None:
+                        cur.execute(_search_alt_ddl(alt_regconfig))
                 conn.commit()
-            self._initialized_brains.add(brain_id)
+            if needs_base:
+                self._initialized_brains.add(brain_id)
+            if needs_search:
+                self._search_ready_brains.add(brain_id)
+            if needs_alt:
+                self._search_alt_brains.add(brain_id)
 
     def save_text_chunk(self, text_chunk: TextChunk, brain_id: str) -> TextChunk:
         document = text_chunk.model_dump(mode="json")
@@ -278,6 +430,39 @@ class PostgreSQLDataClient(DataClient):
                         for row in cur.fetchall()
                     ]
         return SearchResult(text_chunks=text_chunks, observations=observations)
+
+    def search_bm25(
+        self,
+        text: str,
+        brain_id: str,
+        collection: str = "text_chunks",
+        limit: int = 10,
+    ) -> List[Tuple[TextChunk, float]]:
+        if not text or not text.strip() or limit <= 0:
+            return []
+        if collection not in ("*", "text_chunks"):
+            return []
+        k1 = float(config.search_bm25_k1)
+        b = float(config.search_bm25_b)
+        alt_regconfig = config.search_fts_regconfig_for_brain(brain_id)
+        if alt_regconfig:
+            sql = _bm25_sql(alt_regconfig, "search_tsv_alt", "search_len_alt")
+            params = (text, k1, k1, b, b, limit)
+        else:
+            sql = _bm25_sql("english", "search_tsv", "search_len")
+            params = (text, text, k1, k1, b, b, limit)
+        with self._brain_connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    sql,
+                    params,
+                )
+                rows = cur.fetchall()
+        results: List[Tuple[TextChunk, float]] = []
+        for row in rows:
+            chunk = TextChunk.model_validate(row["document"])
+            results.append((chunk, float(row["bm25"] or 0.0)))
+        return results
 
     def get_text_chunks_by_ids(
         self, ids: List[str], with_observations: bool = False, brain_id: str = "default"
