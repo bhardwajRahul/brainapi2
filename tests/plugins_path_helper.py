@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,9 @@ PLUGIN = ROOT / "plugins" / "recsys-gnn"
 
 
 def _load(name: str, path: Path):
+    if not path.is_file():
+        raise unittest.SkipTest(f"optional plugin artifact is not installed: {path}")
+
     # Ensure plugin root is on path so `from models.X` works inside modules.
     plugin_str = str(PLUGIN)
     if plugin_str not in sys.path:

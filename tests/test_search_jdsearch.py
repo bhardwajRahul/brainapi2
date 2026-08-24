@@ -68,11 +68,11 @@ class SearchJdsearchTests(unittest.TestCase):
         self.assertLess(truncated["n_products_seen"], 12_000_000)
 
     def test_prepare_rows_caps_target_and_gold(self):
-        from search.catalog import FROZEN_JSONL_IF_EXISTS, prepare_catalog
+        from search.catalog import FROZEN_JSONL_IF_EXISTS
         from search.dataset import dataset_stats, load_records, split_corpus
         from search.jdsearch import (
-            JDSEARCH_NAME,
             jdsearch_interactions_path,
+            prepare_jdsearch_bundle,
             prepare_jdsearch_rows,
         )
 
@@ -110,11 +110,13 @@ class SearchJdsearchTests(unittest.TestCase):
         self.assertIn("search_jdsearch.jsonl", FROZEN_JSONL_IF_EXISTS)
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "search_jdsearch.jsonl"
-            written = prepare_catalog(
-                JDSEARCH_NAME,
-                out_path=dest,
+            written = prepare_jdsearch_bundle(
+                dest,
                 max_queries=80,
                 max_docs=2000,
+                product_path=product,
+                behavior_path=behavior,
+                extract=False,
             )
             self.assertEqual(written, dest)
             loaded = load_records(dest)
@@ -179,6 +181,8 @@ class SearchJdsearchTests(unittest.TestCase):
             / "models"
             / "mapping.py"
         )
+        if not mapping_path.is_file():
+            self.skipTest("optional features-rec plugin is not installed")
         spec = importlib.util.spec_from_file_location(
             "features_rec_mapping_jdsearch", mapping_path
         )

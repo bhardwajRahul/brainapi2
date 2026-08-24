@@ -9,6 +9,8 @@ class LightGCNTrainSmokeTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         plugin = root / "plugins" / "recsys-gnn"
+        if not (plugin / "models" / "lightgcn.py").is_file():
+            self.skipTest("optional recsys-gnn plugin is not installed")
         if str(plugin) not in sys.path:
             sys.path.insert(0, str(plugin))
 

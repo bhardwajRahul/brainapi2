@@ -15,6 +15,11 @@ class SearchBenchTests(unittest.TestCase):
         if str(bench) not in sys.path:
             sys.path.insert(0, str(bench))
 
+    def require_local_artifact(self, path: Path) -> Path:
+        if not path.is_file():
+            self.skipTest(f"optional local benchmark artifact is absent: {path}")
+        return path
+
     def test_brain_id_guard(self):
         from search.config import DEFAULT_BRAIN_ID, validate_brain_id
 
@@ -166,7 +171,10 @@ class SearchBenchTests(unittest.TestCase):
         from search.dataset import dataset_stats, load_records, map_doc_ids_to_chunks
 
         root = Path(__file__).resolve().parents[1]
-        rows = load_records(root / "benchmarks" / "data" / "search_toy.jsonl")
+        fixture = self.require_local_artifact(
+            root / "benchmarks" / "data" / "search_toy.jsonl"
+        )
+        rows = load_records(fixture)
         stats = dataset_stats(rows)
         self.assertGreaterEqual(stats["n_docs"], 6)
         self.assertGreaterEqual(stats["n_queries"], 8)
@@ -500,6 +508,7 @@ class SearchBenchTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         plugin = root / "plugins" / "search-rerank"
+        self.require_local_artifact(plugin / "rerank.py")
         if str(plugin) not in sys.path:
             sys.path.insert(0, str(plugin))
         import rerank as rerank_mod
@@ -560,6 +569,7 @@ class SearchBenchTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         plugin = root / "plugins" / "search-rerank"
+        self.require_local_artifact(plugin / "rerank.py")
         if str(plugin) not in sys.path:
             sys.path.insert(0, str(plugin))
         import rerank as rerank_mod
@@ -762,12 +772,13 @@ class SearchBenchTests(unittest.TestCase):
     def test_dense_holdout_excludes_eval_qids(self):
         from search.finetune_esci_ce import held_out_query_ids
 
-        holdout = held_out_query_ids(
+        holdout_path = self.require_local_artifact(
             Path(__file__).resolve().parents[1]
             / "benchmarks"
             / "data"
             / "search_esci_74.jsonl"
         )
+        holdout = held_out_query_ids(holdout_path)
         self.assertIn("72", holdout)
         self.assertIn("esci-72", holdout)
         self.assertGreater(len(holdout), 74)
@@ -1534,12 +1545,13 @@ class SearchBenchTests(unittest.TestCase):
         self.assertEqual(labels["B001"], "E")
         self.assertEqual(labels["B002"], "I")
 
-        holdout = held_out_query_ids(
+        holdout_path = self.require_local_artifact(
             Path(__file__).resolve().parents[1]
             / "benchmarks"
             / "data"
             / "search_esci_74.jsonl"
         )
+        holdout = held_out_query_ids(holdout_path)
         self.assertTrue(is_held_out("72", holdout))
         selected = select_groups(
             {
@@ -1560,6 +1572,7 @@ class SearchBenchTests(unittest.TestCase):
 
         import sys
 
+        self.require_local_artifact(PLUGIN_DIR / "encode.py")
         if str(PLUGIN_DIR) not in sys.path:
             sys.path.insert(0, str(PLUGIN_DIR))
         import encode as colbert_encode

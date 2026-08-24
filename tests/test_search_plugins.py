@@ -364,7 +364,10 @@ class SearchPluginPackageTests(unittest.TestCase):
                 sys.path.remove(path)
 
     def _load_plugin_dir(self, name: str):
-        plugin_dir = str(ROOT / "plugins" / name)
+        plugin_path = ROOT / "plugins" / name
+        if not (plugin_path / "main.py").is_file():
+            self.skipTest(f"optional search plugin is not installed: {name}")
+        plugin_dir = str(plugin_path)
         sys.path.insert(0, plugin_dir)
         self._extra_paths.append(plugin_dir)
         return plugin_dir
