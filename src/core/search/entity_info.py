@@ -56,7 +56,10 @@ def _recency_score(node: Node) -> float:
             f"on node {node.uuid}, recency left neutral"
         )
         return 1.0
-    days_ago = max(0, (datetime.now() - to_naive_utc(happened_at)).days)
+    days_ago = max(
+        0,
+        (datetime.now().date() - to_naive_utc(happened_at).date()).days,
+    )
     if days_ago <= 0:
         return 1.0
     return 1 / (1 + np.log1p(days_ago))

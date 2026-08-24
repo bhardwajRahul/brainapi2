@@ -63,11 +63,11 @@ That trace is the difference. Not a nearest-neighbour guess — a **reasoned, wa
 
 ## 🏃 Quickstart (fastest way to run it)
 
-The quickest way to get BrainAPI running is the **`brainapi` TUI** — an interactive CLI that clones the project, sets up a Python environment, walks you through configuration, starts the backing services, and launches everything for you. Pick the defaults and you'll be up in a few minutes.
+The quickest way to get BrainAPI running is the **`brainapi` TUI** — a CLI that clones the project, sets up a Python environment, configures services, starts backing services, and launches everything for you. Run the interactive wizard, or pass flags to skip prompts (hybrid / non-interactive).
 
 ```sh
 npm install -g brainapi-tui
-brainapi init     # clone, install deps, interactive setup → choose "Use default settings"
+brainapi init     # clone, install deps, setup wizard (or pass flags to skip prompts)
 brainapi start    # backing services + API + MCP + worker + console
 ```
 
@@ -83,7 +83,7 @@ Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's i
 
 | Command           | What it does                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------- |
-| `brainapi init`   | Clone the repo into `~/.brainapi/source/`, create a venv, run the setup wizard              |
+| `brainapi init`   | Clone into `~/.brainapi/source/`, create a venv, run setup (flags skip individual prompts)  |
 | `brainapi start`  | Bring up backing services and run the API, MCP server, and Celery worker (Ctrl-C stops all) |
 | `brainapi config` | Re-open the setup wizard to change one area (databases, models, pipeline, plugins, …)       |
 | `brainapi doctor` | Check Python, Docker, Ollama, cloud credentials, and configured services                    |
@@ -91,7 +91,7 @@ Log in to the console with the `BRAINPAT_TOKEN` generated during setup. That's i
 
 Running any command (except `help`) before `init` will run `init` first automatically.
 
-**Useful `brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
+**Useful `brainapi init` flags:** `--defaults`, `--vector-db`, `--models-mode`, provider keys/models, `--brainpat-token`, `--no-plugins`, `--no-start-services` (any passed value skips that wizard prompt). **`brainapi start` flags:** `--pipeline accurate|lightweight`, `--no-services`, `--no-api` / `--no-mcp` / `--no-worker`, `--only api,mcp,worker`. Full reference → [`tui/README.md`](tui/README.md).
 
 > The TUI installs into `~/.brainapi/` (source, venv, `.env`, and `state.json`) — separate from any git clone. Override with `BRAINAPI_HOME`, `BRAINAPI_REPO_URL`, or `BRAINAPI_BRANCH`.
 
@@ -220,11 +220,11 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 
 | Endpoint                     | Method | What you get                                                                                                     |
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — one-shot graph and passage context; p50 target < 1000 ms           |
+| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — one-shot graph triples, passages, historical context, and optional provenance; p50 target < 1000 ms |
 | `/retrieve/search`           | `GET`/`POST` | **Ranked search hits** (opt-in: `SEARCH_ENABLED=true`) — passages (BM25 ∪ dense) by default; optional `entities` / `events` / `communities` channels and `expand=neighbors`; p50 < 200 ms excluding embed |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
-| `/retrieve/entity/synergies` | `GET`  | **Similar things (Preview)** related to a given one; quality thresholds are not yet release-stable                |
-| `/retrieve/recommend`        | `GET`/`POST` | **Ranked recommendations (Preview)**; endpoint compatibility is retained while the quality gate is defined |
+| `/retrieve/entity/synergies` | `GET`  | **Sibling entities (Preview)** — shared event hubs + embedding similarity (`top_k`, `labels`, `polarity`); quality thresholds are not yet release-stable |
+| `/retrieve/recommend`        | `GET`/`POST` | **Train-free recommendations (Preview)** — synergies plus asymmetric walks, multi-interest, and optional attribute preferences; endpoint compatibility is retained while the quality gate is defined |
 
 **Get context for a question:**
 
@@ -233,7 +233,8 @@ curl -X POST http://localhost:8000/retrieve/context \
   -H "Authorization: Bearer $BRAINPAT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "Who organized AI events in London in March 2024?", "brain_id": "default"}'
-# → text_context + triples (the graph path) + historical_context
+# → text_context + triples + historical_context + source_passages
+#    (optional: graph_session_ids, topics, paths; tune with max_facts / max_passages)
 ```
 
 **Check if an entity exists:**
@@ -244,15 +245,24 @@ curl "http://localhost:8000/retrieve/entity/status?target=Emily" \
 # → { "exists": true, "node": {...}, "relationships": [...], "observations": [...] }
 ```
 
-**Find synergies (recommendations, Preview):**
+**Find synergies (same-type siblings, Preview):**
 
 ```sh
-curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101" \
+curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101&top_k=20" \
   -H "Authorization: Bearer $BRAINPAT_TOKEN"
-# → similar entities ranked by how strongly they connect to the target
+# → similar entities ranked by association_score
 ```
 
-These endpoints cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Full list → [REST API Reference](https://brainapi.lumen-labs.ai/docs/rest).
+**Rank recommendations (product / next-item style):**
+
+```sh
+curl "http://localhost:8000/retrieve/recommend?target=u01&top_k=20&labels=PRODUCT&exclude_seen=true" \
+  -H "Authorization: Bearer $BRAINPAT_TOKEN"
+# → ranked recommendations with channel provenance (synergy / asymmetric / multi_interest / …)
+```
+
+
+These endpoints cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Start with [Context retrieval](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) and the [docs hub](https://brainapi.lumen-labs.ai/docs/v2).
 
 ---
 
@@ -261,7 +271,7 @@ These endpoints cover the most common needs, but there are more (`/retrieve/hops
 Out of the box BrainAPI is a general-purpose understanding engine. **Plugins** let you reshape it into something far more specific — without forking the core. Because plugins can add routes, swap agent prompts, and register MCP tools, the same engine can become:
 
 - **A cheap semantic search engine** — extract entities once, then serve fast graph-backed search instead of paying for vector queries every time.
-- **A recommendation system** — build on `/retrieve/entity/synergies` and custom routes to surface related products, content or collaborators.
+- **A recommendation system** — use `/retrieve/recommend` (and `/retrieve/entity/synergies` for same-type siblings) or plugins like `features-rec` / `recsys-gnn`.
 - **A domain-specific extractor** — override the Scout/Architect prompts so the swarm understands your ontology (CRM, legal, medical, …).
 - **An agent toolset** — register custom MCP tools so any LLM runtime can read and write your brain.
 
@@ -345,7 +355,7 @@ print(result.text_context)   # the answer
 print(result.triples)        # the graph path used to derive it
 ```
 
-> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/rest) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
+> Both SDKs are pre-1.0 and under active development. For production, use the [REST API](https://brainapi.lumen-labs.ai/docs/v2) directly until v1.0 ships. You can mix modes freely — ingest over REST, retrieve via MCP inside an agent runtime, or use the SDKs for everything.
 
 ---
 
@@ -365,9 +375,9 @@ print(result.triples)        # the graph path used to derive it
 | ---------------------- | ------------------------------------------------------------------------------------------------ |
 | 🖥️ Local CLI (TUI)     | [`tui/README.md`](tui/README.md) — `npm install -g brainapi-tui`                                 |
 | 📖 Documentation       | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
-| ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/quickstart](https://brainapi.lumen-labs.ai/docs/quickstart)         |
+| ⚡ Quick Start Guide   | [brainapi.lumen-labs.ai/docs/v2](https://brainapi.lumen-labs.ai/docs/v2)                         |
 | 🔌 Plugin Registry     | [registry.brain-api.dev/app](https://registry.brain-api.dev/app)                                 |
-| 🛠️ REST API Reference  | [brainapi.lumen-labs.ai/docs/rest](https://brainapi.lumen-labs.ai/docs/rest)                     |
+| 🛠️ Context API         | [brainapi.lumen-labs.ai/docs/v2/retrieval/context](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) |
 | 🐍 Python SDK (PyPI)   | [pypi.org/project/lumen_brain](https://pypi.org/project/lumen_brain/)                            |
 | 📦 Node.js SDK (npm)   | [npmjs.com/package/@lumenlabs/lumen-brain](https://www.npmjs.com/package/@lumenlabs/lumen-brain) |
 | 💬 Community & Support | [Discord](https://discord.gg/VTngQTaeDf)                                                         |
