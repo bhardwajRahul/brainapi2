@@ -108,7 +108,7 @@ jobs:
           format: spdx-json
           output-file: brainapi.spdx.json
       - name: Audit actual image
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.30.0
         with:
           image-ref: brainapi:ci
           severity: HIGH,CRITICAL
