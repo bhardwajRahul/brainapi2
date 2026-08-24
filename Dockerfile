@@ -74,14 +74,12 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_TIMEOUT=900 \
     PIP_DEFAULT_TIMEOUT=900
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     curl \
+    util-linux \
     && rm -rf /var/lib/apt/lists/* \
-    && GOSU_VERSION=1.19 \
-    && dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" \
-    && curl -fsSL -o /usr/local/bin/gosu \
-       "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-${dpkgArch}" \
-    && chmod +x /usr/local/bin/gosu \
+    && python -m pip uninstall -y setuptools wheel \
     && groupadd -r appuser && useradd -r -g appuser -m appuser
 
 WORKDIR /app

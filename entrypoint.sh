@@ -29,7 +29,8 @@ if [ -n "$BRAINAPI_PLUGINS" ]; then
         version="${plugin_spec##*:}"
         [ "$name" = "$version" ] && version="latest"
         echo "[brainapi] Installing plugin: $name v$version"
-        if ! gosu appuser /app/.venv/bin/python -m src.core.plugins.cli plugins install "$name" --version "$version"; then
+        if ! setpriv --reuid=appuser --regid=appuser --init-groups -- \
+            /app/.venv/bin/python -m src.core.plugins.cli plugins install "$name" --version "$version"; then
             if [ "$plugin_failure_policy" = "fail" ]; then
                 echo "[brainapi] Failed to install required plugin '$name'" >&2
                 exit 1
@@ -39,4 +40,5 @@ if [ -n "$BRAINAPI_PLUGINS" ]; then
     done
 fi
 
-exec gosu appuser /app/.venv/bin/python "$@"
+exec setpriv --reuid=appuser --regid=appuser --init-groups -- \
+    /app/.venv/bin/python "$@"
