@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.services.api.errors import install_error_handlers
 from src.services.api.middlewares.auth import BrainPATMiddleware
 from src.services.api.routes.system import system_router
+from src.workers.redis_url import redis_connection_url
 
 
 def test_malformed_authorization_fails_closed_with_401():
@@ -76,3 +77,11 @@ def test_plugin_failures_are_fatal_by_default_in_production():
         clear=False,
     ):
         _enforce_plugin_results({"demo": False})
+
+
+def test_worker_redis_url_propagates_encoded_password():
+    assert (
+        redis_connection_url("redis", 6379, "secret:/@ value")
+        == "redis://:secret%3A%2F%40%20value@redis:6379/0"
+    )
+    assert redis_connection_url("redis", "6379", None) == "redis://redis:6379/0"
