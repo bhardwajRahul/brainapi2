@@ -73,6 +73,7 @@ from src.core.saving.identity import (
     stable_relationship_id,
 )
 from src.core.saving.ingestion_manager import IngestionManager
+from src.core.search.catalog_graph import is_static_has_triple
 from src.services.api.constants.requests import IngestionTripleSet
 from src.utils.cleanup import strip_properties
 from src.utils.dates import normalize_date_string
@@ -184,8 +185,28 @@ def ingestion_triples_to_relationships(
         if not cr.subject or not cr.subj_event:
             continue
         subject = _triple_entity(cr.subject)
-        event = _triple_entity(cr.event)
         obj = _triple_entity(cr.object)
+        if cr.event is None or is_static_has_triple(cr):
+            pred_name = cr.subj_event.name or "HAS"
+            rel_uuid = cr.subj_event.uuid or stable_relationship_id(
+                subject.uuid, pred_name, obj.uuid
+            )
+            triple_relationships.append(
+                ArchitectAgentRelationship(
+                    tail=subject,
+                    name=pred_name,
+                    tip=obj,
+                    description=cr.subj_event.description,
+                    amount=cr.subj_event.amount,
+                    properties=cr.subj_event.properties or {},
+                    uuid=rel_uuid,
+                    flow_key=rel_uuid,
+                )
+            )
+            continue
+        if not cr.event or not cr.event_obj:
+            continue
+        event = _triple_entity(cr.event)
         flow_key = stable_flow_key(
             event_uuid=event.uuid,
             event_name=event.name,
@@ -224,6 +245,8 @@ def ingestion_triples_to_relationships(
             ]
         )
     for pt in partial_triples:
+        if not pt.event or not pt.event_obj:
+            continue
         event = _triple_entity(pt.event)
         obj = _triple_entity(pt.object)
         if pt.subject:

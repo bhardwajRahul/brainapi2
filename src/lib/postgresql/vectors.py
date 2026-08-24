@@ -20,6 +20,7 @@ import psycopg2.extras
 from pgvector.psycopg2 import register_vector
 
 from src.adapters.interfaces.embeddings import VectorStoreClient
+from src.config import config
 from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
 
 from ._provisioning import borrow, ensure_brain_database, get_brain_pool
@@ -57,14 +58,34 @@ def _table_name(store: str) -> str:
     return f"vectors_{_safe_store(store)}"
 
 
-def _vector_index_ddl(table: str, dimension: int) -> str:
+def _vector_index_ddl(
+    table: str, dimension: int, *, search_enabled: bool | None = None
+) -> str:
     dim = int(dimension)
-    if dim > 2000:
-        return ""
-    return f"""
+    if search_enabled is None:
+        search_enabled = bool(config.search_enabled)
+    if dim <= 2000:
+        return f"""
             CREATE INDEX IF NOT EXISTS idx_{table}_embeddings
                 ON {table} USING hnsw (embeddings vector_cosine_ops);
             """
+    if not search_enabled:
+        return ""
+    return f"""
+            CREATE INDEX IF NOT EXISTS idx_{table}_embeddings_halfvec
+                ON {table} USING hnsw
+                ((embeddings::halfvec({dim})) halfvec_cosine_ops);
+            """
+
+
+def _uses_halfvec_ann(dimension: int, *, search_enabled: bool | None = None) -> bool:
+    if search_enabled is None:
+        search_enabled = bool(config.search_enabled)
+    try:
+        dim = int(dimension)
+    except (TypeError, ValueError):
+        return False
+    return search_enabled and dim > 2000
 
 
 def _table_vector_dimension(cur: psycopg2.extensions.cursor, table: str) -> Optional[int]:
@@ -132,6 +153,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                 return
             dimension = EMBEDDING_STORES_SIZES[store]
             table = _table_name(store)
+            index_ddl = _vector_index_ddl(table, dimension)
             ddl = f"""
             CREATE TABLE IF NOT EXISTS {table} (
                 id BIGINT PRIMARY KEY,
@@ -141,7 +163,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
             );
             CREATE INDEX IF NOT EXISTS idx_{table}_uuid
                 ON {table} (uuid);
-            {_vector_index_ddl(table, dimension)}
+            {index_ddl}
             """
             with self._connection(brain_id) as conn:
                 with conn.cursor() as cur:
@@ -155,7 +177,17 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                             dimension,
                         )
                         cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-                    cur.execute(ddl)
+                    try:
+                        cur.execute(ddl)
+                    except Exception as exc:
+                        if _uses_halfvec_ann(dimension):
+                            raise RuntimeError(
+                                "SEARCH_ENABLED=true requires a halfvec HNSW index "
+                                f"on {table} (dimension {dimension} > 2000). "
+                                "The vector backend could not create it: "
+                                f"{exc}"
+                            ) from exc
+                        raise
                 conn.commit()
             self._initialized_stores.add(key)
 
@@ -212,6 +244,15 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
             return []
         table = _table_name(store)
         fetch_k = ann_overfetch_k(k)
+        dimension = EMBEDDING_STORES_SIZES[store]
+        use_halfvec = _uses_halfvec_ann(dimension)
+        if use_halfvec:
+            order_sql = (
+                f"embeddings::halfvec({dimension}) "
+                f"<=> (%s::vector)::halfvec({dimension})"
+            )
+        else:
+            order_sql = "embeddings <=> %s::vector"
         with self._connection(brain_id) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
@@ -223,7 +264,7 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                     SELECT id, uuid, metadata,
                            (embeddings <=> %s::vector) AS distance
                     FROM {table}
-                    ORDER BY embeddings <=> %s::vector, uuid ASC, id ASC
+                    ORDER BY {order_sql}, uuid ASC, id ASC
                     LIMIT %s
                     """,
                     (data_vector, data_vector, fetch_k),

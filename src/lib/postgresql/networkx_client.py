@@ -711,6 +711,40 @@ class NetworkXGraphClient(GraphClient):
             )
         return SearchEntitiesResult(results=nodes, total=total)
 
+    def search_nodes_bm25(
+        self,
+        query_text: str,
+        brain_id: str,
+        *,
+        limit: int = 10,
+        node_labels: Optional[list[str]] = None,
+        node_uuids: Optional[list[str]] = None,
+    ) -> list[tuple[Node, float]]:
+        rows = self._store.search_nodes_bm25(
+            query_text,
+            brain_id,
+            limit=limit,
+            node_labels=node_labels,
+            node_uuids=node_uuids,
+        )
+        hits: list[tuple[Node, float]] = []
+        for node_uuid, score, data in rows:
+            labels = [str(item) for item in (data.get("labels") or []) if str(item).strip()]
+            properties = {k: v for k, v in data.items() if k != "labels"}
+            hits.append(
+                (
+                    Node(
+                        uuid=str(node_uuid),
+                        name=str(data.get("name") or node_uuid),
+                        labels=labels,
+                        description=data.get("description"),
+                        properties=properties,
+                    ),
+                    float(score),
+                )
+            )
+        return hits
+
     def deprecate_relationship(
         self,
         subject: Node,

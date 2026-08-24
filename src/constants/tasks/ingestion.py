@@ -85,3 +85,10 @@ class IngestionTaskArgs(BaseModel):
             "Used to resolve relative dates like 'yesterday' into absolute dates."
         ),
     )
+    skip_enrichment: bool = Field(
+        default=False,
+        description=(
+            "Persist the text chunk and embedding only. Skip observations and "
+            "knowledge-graph enrichment (Scout/Architect)."
+        ),
+    )

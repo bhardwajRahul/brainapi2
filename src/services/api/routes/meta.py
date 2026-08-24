@@ -17,17 +17,18 @@ from src.services.api.controllers.meta import (
     get_relationships_properties as get_relationships_properties_controller,
     get_entity_properties as get_entity_properties_controller,
 )
+from src.services.api.constants.responses import LoginInfoResponse, StringListResponse
 
 meta_router = APIRouter(prefix="/meta", tags=["meta"])
 
-@meta_router.get(path="/login-info")
+@meta_router.get(path="/login-info", response_model=LoginInfoResponse)
 async def get_login_info(request: Request):
     """
     Resolve whether a BrainPAT is the system token or scoped to a single brain.
     """
     return await get_login_info_controller(request)
 
-@meta_router.get(path="/relationships-properties")
+@meta_router.get(path="/relationships-properties", response_model=StringListResponse)
 async def get_relationships_properties(
     brain_id: str = Depends(get_brain_id),
 ):
@@ -42,7 +43,7 @@ async def get_relationships_properties(
     """
     return await get_relationships_properties_controller(brain_id)
 
-@meta_router.get(path="/entity-labels")
+@meta_router.get(path="/entity-labels", response_model=StringListResponse)
 async def get_entities_labels(
     brain_id: str = Depends(get_brain_id),
 ):
@@ -57,7 +58,7 @@ async def get_entities_labels(
     """
     return await get_entities_labels_controller(brain_id)
 
-@meta_router.get(path="/entity-properties")
+@meta_router.get(path="/entity-properties", response_model=StringListResponse)
 async def get_entity_properties(
     brain_id: str = Depends(get_brain_id),
 ):

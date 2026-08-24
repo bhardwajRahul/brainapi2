@@ -24,6 +24,7 @@ warnings.filterwarnings(
 )
 
 from src.workers.kombu_redis_patch import apply_kombu_redis_unblocked_patch
+from src.workers.redis_url import redis_connection_url
 
 apply_kombu_redis_unblocked_patch()
 
@@ -42,18 +43,23 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+REDIS_URL = redis_connection_url(
+    REDIS_HOST,
+    REDIS_PORT,
+    os.getenv("REDIS_PASSWORD"),
+)
 
 ingestion_app = Celery(
     "ingestion_app",
     broker=(
         "amqp://kalo:kalo@localhost:5672/"
         if os.getenv("CELERY_BACKEND") == "rabbitmq"
-        else f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
+        else REDIS_URL
     ),
     backend=(
         "rpc://"
         if os.getenv("CELERY_BACKEND") == "rabbitmq"
-        else f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
+        else REDIS_URL
     ),
     include=["src.workers.tasks.ingestion"],
 )

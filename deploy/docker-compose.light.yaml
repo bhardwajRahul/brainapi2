@@ -1,234 +1,147 @@
-# BrainAPI deploy profile: light
-# Slim stack (Redis + Postgres/pgvector + API/worker/MCP).
-# Pair with deploy/env.light.example → /root/.env
-# See deploy/README.md
+# BrainAPI production profile: light (PostgreSQL/pgvector + Redis).
 
-version: "3.8"
+x-brainapi-common: &brainapi-common
+  image: ${BRAINAPI_IMAGE:?BRAINAPI_IMAGE is required}
+  env_file:
+    - ${BRAINAPI_ENV_FILE:?BRAINAPI_ENV_FILE is required}
+  environment: &brainapi-environment
+    ENV: production
+    PLUGIN_FAILURE_POLICY: ${PLUGIN_FAILURE_POLICY:-fail}
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_USERNAME: ${POSTGRES_USERNAME:-brainapi}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    POSTGRES_SYSTEM_DATABASE: ${POSTGRES_SYSTEM_DATABASE:-brainapi}
+    POSTGRES_MAINTENANCE_DATABASE: postgres
+    BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
+    PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
+    PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
+    PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
+  volumes:
+    - brainapi-plugins:/app/plugins
+  networks: [appnet]
+  restart: unless-stopped
 
 services:
   nginx:
-    image: nginx:stable-alpine
-    container_name: brainapi-nginx
+    image: nginx:1.28.2-alpine3.23
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - /srv/nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
-      - /srv/nginx/conf/conf.d:/etc/nginx/conf.d:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - /srv/nginx/logs:/var/log/nginx
-    networks:
-      - appnet
-    restart: unless-stopped
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
     depends_on:
-      - redis
-      - postgres
-    mem_limit: 16m
-    cpus: 0.025
+      brainapi:
+        condition: service_healthy
+      brainapi-mcp:
+        condition: service_healthy
+    networks: [appnet]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    cpus: 0.10
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   redis:
-    image: redis:7-alpine
-    container_name: brainapi-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    command: >
-      redis-server
-      --appendonly yes
-      --maxmemory 192mb
-      --maxmemory-policy allkeys-lru
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-      --tcp-backlog 511
-      --timeout 300
-    networks:
-      - appnet
+    image: redis:7.4.7-alpine3.21
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command: [redis-server, --requirepass, "${REDIS_PASSWORD:?REDIS_PASSWORD is required}", --appendonly, "yes", --maxmemory, 192mb, --maxmemory-policy, allkeys-lru, --save, "900 1", --save, "300 10", --save, "60 10000"]
+    volumes: [redis-data:/data]
+    networks: [appnet]
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     mem_limit: 256m
-    cpus: 0.0625
+    cpus: 0.10
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping 2>/dev/null | grep -q PONG"]
       interval: 10s
       timeout: 3s
-      retries: 3
+      retries: 5
 
   postgres:
-    image: pgvector/pgvector:pg16
-    container_name: brainapi-postgres
-    ports:
-      - "5432:5432"
+    image: pgvector/pgvector:0.8.1-pg16-bookworm
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - appnet
+      POSTGRES_USER: ${POSTGRES_USERNAME:-brainapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_SYSTEM_DATABASE:-brainapi}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks: [appnet]
     restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.25
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: 0.35
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
 
   brainapi:
-    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
-    container_name: brainapi-api
-    ports:
-      - "8000:8000"
-    env_file:
-      - /root/.env
-    environment:
-      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
-      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
-      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
-    volumes:
-      - brainapi-plugins:/app/plugins
-    command:
-      [
-        "-m",
-        "uvicorn",
-        "src.services.api.app:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-        "--workers",
-        "1",
-        "--timeout-keep-alive",
-        "30",
-        "--limit-concurrency",
-        "50",
-        "--backlog",
-        "256",
-      ]
+    <<: *brainapi-common
+    command: [-m, uvicorn, src.services.api.app:app, --host, 0.0.0.0, --port, "8000", --workers, "1", --timeout-keep-alive, "30", --limit-concurrency, "50"]
     depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - appnet
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.25
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    mem_limit: 768m
+    cpus: 0.50
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test:
-        [
-          "CMD",
-          "curl",
-          "-f",
-          "http://localhost:8000/",
-          "-H",
-          "BrainPAT: ${BRAINPAT_TOKEN}",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-      start_interval: 30s
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
 
   brainapi-worker:
-    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
-    container_name: brainapi-worker
-    env_file:
-      - /root/.env
-    environment:
-      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
-      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
-      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
-      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-    volumes:
-      - brainapi-plugins:/app/plugins
-    command:
-      [
-        "-m",
-        "celery",
-        "-A",
-        "src.workers.app",
-        "worker",
-        "--loglevel=info",
-        "--pool=threads",
-        "--without-gossip",
-        "--without-mingle",
-        "--concurrency=1",
-        "--max-tasks-per-child=50",
-      ]
+    <<: *brainapi-common
+    command: [-m, celery, -A, src.workers.app, worker, --loglevel=info, --pool=threads, --without-gossip, --without-mingle, --concurrency=1, --max-tasks-per-child=50]
     depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - appnet
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.25
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    mem_limit: 768m
+    cpus: 0.50
+    security_opt: [no-new-privileges:true]
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "python -m celery -A src.workers.app inspect ping --timeout 5 >/dev/null 2>&1 && q=$(redis-cli -h redis -p 6379 LLEN ingest_data 2>/dev/null || echo 0); [ \"$q\" -lt \"${CELERY_QUEUE_HEALTH_THRESHOLD:-50}\" ]",
-        ]
+        - CMD-SHELL
+        - >-
+          python -m celery -A src.workers.app inspect ping --timeout 5 >/dev/null 2>&1 &&
+          python -c 'import os,redis,sys; r=redis.Redis(host="redis",password=os.environ["REDIS_PASSWORD"]); sys.exit(r.llen("ingest_data") >= int(os.getenv("CELERY_QUEUE_HEALTH_THRESHOLD","50")))'
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
-      start_interval: 30s
+      start_period: 90s
 
   brainapi-mcp:
-    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
-    container_name: brainapi-mcp
-    ports:
-      - "8001:8001"
-    env_file:
-      - /root/.env
+    <<: *brainapi-common
     environment:
+      <<: *brainapi-environment
       MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-}
       MCP_RESOURCE_SERVER_URL: ${MCP_RESOURCE_SERVER_URL:-}
-      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
-      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
-      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
-      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-    volumes:
-      - brainapi-plugins:/app/plugins
-    command:
-      [
-        "-m",
-        "uvicorn",
-        "src.services.mcp.app:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8001",
-        "--timeout-keep-alive",
-        "30",
-      ]
+    command: [-m, uvicorn, src.services.mcp.app:app, --host, 0.0.0.0, --port, "8001", --timeout-keep-alive, "30"]
     depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - appnet
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.25
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    mem_limit: 768m
+    cpus: 0.50
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'code=$(curl -s -o /dev/null -w ''%{http_code}'' http://localhost:8001/); test "$code" = ''200'' || test "$code" = ''405''',
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
 
 networks:
   appnet:

@@ -210,6 +210,8 @@ BrainAPI follows an **append-only philosophy**: nothing is deleted from the grap
 - **`accurate`** (default) — the full swarm runs: Scout extracts every entity, the Observations agent writes notes, and the Janitor validates and deduplicates the Architect's relationships.
 - **`lightweight`** — a faster, cheaper path that extracts only the most important entities and skips the heavier validation steps. Switch with `--pipeline lightweight` or `PIPELINE_MODE` in `.env`.
 
+Search (`GET|POST /retrieve/search`) is **off by default**. Set `SEARCH_ENABLED=true` to register the hit-list API. BM25 requires `DATA_DB=postgresql`; dense-only search (`SEARCH_USE_BM25=false`) is supported by either production profile. PostgreSQL writes BM25 `tsvector` indexes and uses halfvec HNSW when embeddings are >2000-d. Default light-profile retrieval is both channels fused (`SEARCH_FUSION=rrf`). The search p50 SLO is **< 200 ms excluding `embed.query`** — ask for `profile_stages` to split embed RTT from retrieve. `/retrieve/context` stays dense ∪ ILIKE unless search is on and `CONTEXT_PASSAGE_MODE` is `hybrid` / `bm25` / `dense`.
+
 ---
 
 ## 🔎 Retrieving Knowledge
@@ -218,10 +220,11 @@ Once your data is in, BrainAPI exposes purpose-built retrieval endpoints (REST, 
 
 | Endpoint                     | Method | What you get                                                                                                     |
 | ---------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — graph triples, passages, historical context, and optional provenance |
+| `/retrieve/context`          | `POST` | **Relevant information for a piece of text** — one-shot graph triples, passages, historical context, and optional provenance; p50 target < 1000 ms |
+| `/retrieve/search`           | `GET`/`POST` | **Ranked search hits** (opt-in: `SEARCH_ENABLED=true`) — passages (BM25 ∪ dense) by default; optional `entities` / `events` / `communities` channels and `expand=neighbors`; p50 < 200 ms excluding embed |
 | `/retrieve/entity/status`    | `GET`  | **Existence check** for a specific entity — returns whether it exists, its node, relationships, and observations |
-| `/retrieve/entity/synergies` | `GET`  | **Sibling entities** of the same type — shared event hubs + embedding similarity (`top_k`, `labels`, `polarity`) |
-| `/retrieve/recommend`        | `GET`/`POST` | **Train-free recommendations** — synergies plus asymmetric walks, multi-interest, optional attribute prefs |
+| `/retrieve/entity/synergies` | `GET`  | **Sibling entities (Preview)** — shared event hubs + embedding similarity (`top_k`, `labels`, `polarity`); quality thresholds are not yet release-stable |
+| `/retrieve/recommend`        | `GET`/`POST` | **Train-free recommendations (Preview)** — synergies plus asymmetric walks, multi-interest, and optional attribute preferences; endpoint compatibility is retained while the quality gate is defined |
 
 **Get context for a question:**
 
@@ -242,14 +245,13 @@ curl "http://localhost:8000/retrieve/entity/status?target=Emily" \
 # → { "exists": true, "node": {...}, "relationships": [...], "observations": [...] }
 ```
 
-**Find synergies (same-type siblings):**
+**Find synergies (same-type siblings, Preview):**
 
 ```sh
 curl "http://localhost:8000/retrieve/entity/synergies?target=Neural%20Networks%20101&top_k=20" \
   -H "Authorization: Bearer $BRAINPAT_TOKEN"
 # → similar entities ranked by association_score
 ```
-
 
 **Rank recommendations (product / next-item style):**
 
@@ -260,7 +262,7 @@ curl "http://localhost:8000/retrieve/recommend?target=u01&top_k=20&labels=PRODUC
 ```
 
 
-These three cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Start with [Context retrieval](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) and the [docs hub](https://brainapi.lumen-labs.ai/docs/v2).
+These endpoints cover the most common needs, but there are more (`/retrieve/hops`, `/retrieve/entities/neighbors`, `/retrieve/text-chunks`, …). Start with [Context retrieval](https://brainapi.lumen-labs.ai/docs/v2/retrieval/context) and the [docs hub](https://brainapi.lumen-labs.ai/docs/v2).
 
 ---
 

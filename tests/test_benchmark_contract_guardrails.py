@@ -70,6 +70,36 @@ class BenchmarkContractGuardrailsTests(unittest.TestCase):
                 msg=f"{path} should still target core ingest",
             )
 
+    def test_search_client_scores_via_search_not_context(self):
+        client = ROOT / "benchmarks" / "search" / "client.py"
+        self.assertTrue(client.exists(), msg="benchmarks/search/client.py is required")
+        text = client.read_text(encoding="utf-8")
+        self.assertIn("/retrieve/search", text)
+        self.assertIn("/ingest/", text)
+        self.assertIn("skip_enrichment", text)
+        self.assertNotIn(
+            "/retrieve/context",
+            text,
+            msg="search harness must not score via /retrieve/context",
+        )
+        self.assertNotIn(
+            "/retrieve/recommend",
+            text,
+            msg="search harness must not score via /retrieve/recommend",
+        )
+        for needle in ("locomoconv", "demorecsys"):
+            self.assertNotIn(
+                needle,
+                text,
+                msg=f"search client must not default to {needle}",
+            )
+
+    def test_search_config_defaults_to_searchbench(self):
+        config = ROOT / "benchmarks" / "search" / "config.py"
+        text = config.read_text(encoding="utf-8")
+        self.assertIn('DEFAULT_BRAIN_ID = "searchbenchsmoke"', text)
+        self.assertIn('REQUIRED_PREFIX = "searchbench"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

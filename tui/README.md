@@ -94,9 +94,10 @@ The interactive flow asks (any matching CLI flag skips that prompt):
 2. Otherwise: Vector DB → Data DB → Graph DB → Models mode
 3. For `remote` models mode: pick provider, then provide GCP credentials, project, and model names
 4. For `local` models mode: probe Ollama, wait for it to start, then verify pulled models
-5. Connection details for only the services you actually selected
-6. `BRAINPAT_TOKEN` (generate or paste)
-7. Optionally start the docker compose containers now
+5. Search: enable `/retrieve/search`? If yes, retrieval = both fused (default) / dense only / BM25 only. Requires `DATA_DB=postgresql`. Search p50 SLO is < 200 ms excluding embed RTT.
+6. Connection details for only the services you actually selected
+7. `BRAINPAT_TOKEN` (generate or paste)
+8. Optionally start the docker compose containers now
 
 If Python (>=3.11) or Docker is missing, the TUI walks you through installing them with platform-aware commands and retries detection automatically.
 

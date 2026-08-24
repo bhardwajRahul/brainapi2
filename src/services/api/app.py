@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+from hashlib import sha1
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,15 +13,20 @@ dotenv.load_dotenv(_project_root / ".env")
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.routing import APIRoute
 from uvicorn import run
 
+from src.constants.data import BRAIN_VERSION
 from src.services.api.console_static import SPAStaticFiles
+from src.services.api.errors import install_error_handlers
+from src.services.api.openapi import install_openapi_contract
 
 from src.services.api.middlewares.auth import BrainPATMiddleware
 from src.services.api.middlewares.brains import BrainMiddleware
 from src.services.api.routes.ingest import ingest_router
 from src.services.api.routes.meta import meta_router
 from src.services.api.routes.model import model_router
+from src.services.api.routes.public import public_router
 from src.services.api.routes.retrieve import retrieve_router
 from src.services.api.routes.system import system_router
 from src.services.api.routes.tasks import tasks_router
@@ -36,6 +43,50 @@ def _console_enabled() -> bool:
     return os.getenv("CONSOLE_ENABLED", "true").strip().lower() != "false"
 
 
+def _production_mode() -> bool:
+    return os.getenv("ENV", "production").strip().lower() != "development"
+
+
+def _cors_allowed_origins() -> list[str]:
+    configured = [
+        origin.strip()
+        for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if not configured and not _production_mode():
+        return ["*"]
+    if "*" in configured and _production_mode():
+        raise RuntimeError(
+            "CORS_ALLOWED_ORIGINS='*' is allowed only when ENV=development"
+        )
+    return configured
+
+
+def _enforce_plugin_results(results: dict[str, bool]) -> None:
+    failed = sorted(name for name, loaded in results.items() if not loaded)
+    if not failed:
+        return
+    default_policy = "fail" if _production_mode() else "warn"
+    policy = os.getenv("PLUGIN_FAILURE_POLICY", default_policy).strip().lower()
+    if policy not in {"fail", "warn"}:
+        raise RuntimeError("PLUGIN_FAILURE_POLICY must be 'fail' or 'warn'")
+    if policy == "fail":
+        raise RuntimeError(f"Required plugins failed to load: {', '.join(failed)}")
+
+
+def stable_operation_id(route: APIRoute) -> str:
+    """Generate function-calling-safe IDs that are stable across schema exports."""
+
+    tag = route.tags[0] if route.tags else "api"
+    method = sorted(route.methods or {"get"})[0].lower()
+    raw = f"{tag}_{route.name}_{method}".lower()
+    normalized = re.sub(r"[^a-z0-9_]+", "_", raw).strip("_")
+    if len(normalized) <= 64:
+        return normalized
+    digest = sha1(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{normalized[:55].rstrip('_')}_{digest}"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from src.core.plugins.context import PluginContext
@@ -47,6 +98,7 @@ async def lifespan(app: FastAPI):
     results = loader.load_all()
 
     _log_plugin_banner(loader, results)
+    _enforce_plugin_results(results)
 
     for event_name, handlers in ctx._event_handlers.items():
         if event_name == "startup":
@@ -118,16 +170,21 @@ def _log_plugin_banner(loader, results: dict[str, bool]):
 
 
 app = FastAPI(
+    title="BrainAPI",
+    version=BRAIN_VERSION,
+    description="Knowledge, memory, search, recommendation, and agent API.",
     debug=os.getenv("ENV") == "development",
     lifespan=lifespan,
-    redirect_slashes=True,
+    redirect_slashes=False,
+    generate_unique_id_function=stable_operation_id,
 )
+install_error_handlers(app)
 
 app.add_middleware(BrainPATMiddleware)
 app.add_middleware(BrainMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_allowed_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,9 +197,11 @@ app.include_router(meta_router)
 app.include_router(model_router)
 app.include_router(system_router)
 app.include_router(tasks_router)
+app.include_router(public_router)
+install_openapi_contract(app)
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 async def root():
     return Response(content="ok", status_code=200)
 

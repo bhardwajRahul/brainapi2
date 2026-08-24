@@ -25,6 +25,7 @@ from src.services.api.constants.requests import (
     IngestionRequestBody,
     IngestionStructuredRequestBody,
 )
+from src.services.api.constants.responses import IngestionAcceptedResponse
 from src.services.input.agents import cache_adapter
 from src.workers.tasks.ingestion import ingest_data as ingest_data_task
 from src.workers.tasks.ingestion import ingest_file as ingest_file_task
@@ -39,7 +40,9 @@ RETRY_DELAY_BASE = 0.1
 ingest_router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
-@ingest_router.post(path="/", status_code=202)
+@ingest_router.post(
+    path="/", status_code=202, response_model=IngestionAcceptedResponse
+)
 async def ingest_data(
     data: IngestionRequestBody,
     request: Request,
@@ -81,7 +84,9 @@ async def ingest_data(
     )
 
 
-@ingest_router.post(path="/structured", status_code=202)
+@ingest_router.post(
+    path="/structured", status_code=202, response_model=IngestionAcceptedResponse
+)
 async def ingest_structured_data(
     data: IngestionStructuredRequestBody,
     brain_id: str = Depends(get_brain_id),
@@ -119,7 +124,9 @@ async def ingest_structured_data(
     )
 
 
-@ingest_router.post(path="/file")
+@ingest_router.post(
+    path="/file", status_code=202, response_model=IngestionAcceptedResponse
+)
 async def ingest_file(
     request: Request,
     file: Annotated[UploadFile, File()],
@@ -179,14 +186,17 @@ async def ingest_file(
                 headers={"Authorization": f"Bearer {config.docparser_token}"},
             )
             if response.status_code != 200:
-                raise HTTPException(status_code=500, detail=response.text)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Document parser rejected the ingestion request",
+                )
             response_content = {
                 "message": "File ingestion accepted",
                 "task_id": task,
             }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="File ingestion failed") from exc
 
     return JSONResponse(status_code=202, content=response_content)

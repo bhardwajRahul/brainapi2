@@ -1,0 +1,42 @@
+# CI-only provider override. This file is never part of a production deployment.
+x-ci-model-environment: &ci-model-environment
+  BRAINPAT_TOKEN: ${BRAINPAT_TOKEN:?BRAINPAT_TOKEN is required}
+  LLM_SMALL_PROVIDER: openai
+  LLM_LARGE_PROVIDER: openai
+  EMBEDDINGS_PROVIDER: openai
+  OPENAI_API_KEY: ci-isolated-token
+  OPENAI_BASE_URL: http://embedding-stub:8080/v1
+  SEARCH_ENABLED: "true"
+  SEARCH_USE_DENSE: "true"
+  SEARCH_USE_BM25: "false"
+  CONTEXT_PASSAGE_MODE: dense
+
+services:
+  embedding-stub:
+    image: python:3.11.14-slim-bookworm
+    command: [python, /stub.py]
+    volumes:
+      - ../scripts/openai_ci_stub.py:/stub.py:ro
+    networks: [appnet]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  brainapi:
+    environment: *ci-model-environment
+    depends_on:
+      embedding-stub: {condition: service_healthy}
+
+  brainapi-worker:
+    environment: *ci-model-environment
+    depends_on:
+      embedding-stub: {condition: service_healthy}
+
+  brainapi-mcp:
+    environment: *ci-model-environment
+    depends_on:
+      embedding-stub: {condition: service_healthy}

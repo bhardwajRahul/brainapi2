@@ -23,11 +23,12 @@ from src.services.api.controllers.model import (
     add_relationship as add_relationship_controller,
     update_relationship as update_relationship_controller,
 )
+from src.constants.kg import Node, Predicate
 
 model_router = APIRouter(prefix="/model", tags=["model"])
 
 
-@model_router.post(path="/entity")
+@model_router.post(path="/entity", response_model=list[Node] | str)
 async def add_entity(
     request: AddEntityRequest,
     brain_id: str = Depends(get_brain_id),
@@ -54,7 +55,7 @@ async def add_entity(
     )
 
 
-@model_router.put(path="/entity")
+@model_router.put(path="/entity", response_model=Node | None)
 async def update_entity(
     request: UpdateEntityRequest,
     brain_id: str = Depends(get_brain_id),
@@ -76,7 +77,7 @@ async def update_entity(
     )
 
 
-@model_router.post(path="/relationship")
+@model_router.post(path="/relationship", response_model=str)
 async def add_relationship(
     request: AddRelationshipRequest,
     brain_id: str = Depends(get_brain_id),
@@ -97,7 +98,7 @@ async def add_relationship(
     )
 
 
-@model_router.put(path="/relationship")
+@model_router.put(path="/relationship", response_model=Predicate | None)
 async def update_relationship(
     request: UpdateRelationshipRequest,
     brain_id: str = Depends(get_brain_id),

@@ -14,6 +14,8 @@ from src.core.search.entity_sibilings import (
 from src.utils.dates import parse_date_string, to_naive_utc
 from src.services.kg_agent.main import graph_adapter
 
+UNKNOWN_BEHAVIOR_WEIGHT = 0.2
+
 DEFAULT_BEHAVIOR_WEIGHTS: Dict[str, float] = {
     "view": 0.2,
     "click": 0.2,
@@ -24,6 +26,19 @@ DEFAULT_BEHAVIOR_WEIGHTS: Dict[str, float] = {
     "buy": 1.0,
     "purchased": 1.0,
     "bought": 1.0,
+    "favorite": 0.7,
+    "favourite": 0.7,
+    "favorites": 0.7,
+    "favourites": 0.7,
+    "wishlist": 0.7,
+    "add_to_favorite": 0.7,
+    "addtofavorite": 0.7,
+    "add_to_favourite": 0.7,
+    "addtofavourite": 0.7,
+    "add_to_wishlist": 0.7,
+    "addtowishlist": 0.7,
+    "follow": 0.5,
+    "flw": 0.5,
 }
 
 ATTR_LABELS = frozenset(
@@ -46,7 +61,7 @@ def behavior_weight(
         compact = alias.replace("-", "").replace("_", "").replace(" ", "")
         if compact == key:
             return float(value)
-    return 1.0
+    return UNKNOWN_BEHAVIOR_WEIGHT
 
 
 def recency_decay(

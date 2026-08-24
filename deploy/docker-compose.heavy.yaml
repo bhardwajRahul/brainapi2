@@ -1,369 +1,245 @@
-# BrainAPI deploy profile: heavy
-# Full stack (Redis + Neo4j + Milvus + Mongo + API/worker/MCP).
-# Pair with deploy/env.heavy.example → /root/.env
-# See deploy/README.md
+# BrainAPI production profile: heavy (Neo4j + MongoDB + Milvus + Redis).
 
-version: "3.8"
+x-brainapi-common: &brainapi-common
+  image: ${BRAINAPI_IMAGE:?BRAINAPI_IMAGE is required}
+  env_file:
+    - ${BRAINAPI_ENV_FILE:?BRAINAPI_ENV_FILE is required}
+  environment: &brainapi-environment
+    ENV: production
+    PLUGIN_FAILURE_POLICY: ${PLUGIN_FAILURE_POLICY:-fail}
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    NEO4J_HOST: neo4j
+    NEO4J_PORT: "7687"
+    NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+    NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+    MONGO_HOST: mongo
+    MONGO_PORT: "27017"
+    MONGO_USERNAME: ${MONGO_USERNAME:-brainapi}
+    MONGO_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+    MONGO_SYSTEM_DATABASE: ${MONGO_SYSTEM_DATABASE:-system}
+    MILVUS_HOST: milvus
+    MILVUS_PORT: "19530"
+    MILVUS_TOKEN: ${MILVUS_TOKEN:?MILVUS_TOKEN is required}
+    BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
+    PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
+    PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
+    PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
+  volumes: [brainapi-plugins:/app/plugins]
+  networks: [appnet]
+  restart: unless-stopped
 
 services:
   nginx:
-    image: nginx:stable-alpine
-    container_name: brainapi-nginx
-    ports:
-      - "80:80"
-      - "443:443"
+    image: nginx:1.28.2-alpine3.23
+    ports: ["80:80", "443:443"]
     volumes:
-      - /srv/nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
-      - /srv/nginx/conf/conf.d:/etc/nginx/conf.d:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - /srv/nginx/logs:/var/log/nginx
-    networks:
-      - appnet
-    restart: unless-stopped
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
     depends_on:
-      - redis
-      - mongo
-      - neo4j
-      - milvus
+      brainapi: {condition: service_healthy}
+      brainapi-mcp: {condition: service_healthy}
+    networks: [appnet]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    security_opt: [no-new-privileges:true]
     mem_limit: 128m
-    cpus: 0.2
+    cpus: 0.20
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   redis:
-    image: redis:7-alpine
-    container_name: brainapi-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    command: >
-      redis-server
-      --appendonly yes
-      --maxmemory 1500mb
-      --maxmemory-policy allkeys-lru
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-      --tcp-backlog 511
-      --timeout 300
-    networks:
-      - appnet
+    image: redis:7.4.7-alpine3.21
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command: [redis-server, --requirepass, "${REDIS_PASSWORD:?REDIS_PASSWORD is required}", --appendonly, "yes", --maxmemory, 1500mb, --maxmemory-policy, allkeys-lru, --save, "900 1", --save, "300 10", --save, "60 10000"]
+    volumes: [redis-data:/data]
+    networks: [appnet]
     restart: unless-stopped
-    mem_limit: 2048m
-    cpus: 0.5
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    cpus: 0.50
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping 2>/dev/null | grep -q PONG"]
       interval: 10s
       timeout: 3s
-      retries: 3
+      retries: 5
 
   neo4j:
-    image: neo4j:5-enterprise
-    container_name: brainapi-neo4j
-    ports:
-      - "7474:7474"
-      - "7687:7687"
+    image: neo4j:5.26.16-enterprise
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_max__size: 2g
+      NEO4J_server_memory_pagecache_size: 1g
     volumes:
       - neo4j-data:/data
       - neo4j-logs:/logs
       - neo4j-plugins:/plugins
-      - ./src/config/neo4j:/var/lib/neo4j/conf
-    environment:
-      - NEO4J_AUTH=neo4j/your_password
-      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
-      - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_server_memory_heap_max__size=2g
-      - NEO4J_server_memory_pagecache_size=1g
-      - NEO4J_server_jvm_additional=-XX:+UseG1GC -XX:MaxGCPauseMillis=200
-    networks:
-      - appnet
+    networks: [appnet]
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     mem_limit: 3g
-    cpus: 1
+    cpus: 1.0
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      test: ["CMD-SHELL", "cypher-shell -u \"$${NEO4J_AUTH%%/*}\" -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1' >/dev/null"]
       interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 120s
+      retries: 10
+      start_period: 90s
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.18
-    container_name: brainapi-etcd
     environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    volumes:
-      - etcd-data:/etcd
-    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
-    networks:
-      - appnet
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: [etcd, --advertise-client-urls=http://etcd:2379, --listen-client-urls=http://0.0.0.0:2379, --data-dir=/etcd]
+    volumes: [etcd-data:/etcd]
+    networks: [appnet]
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     mem_limit: 512m
-    cpus: 0.2
+    cpus: 0.25
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
   minio:
     image: minio/minio:RELEASE.2024-12-18T13-15-44Z
-    container_name: brainapi-minio
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-    ports:
-      - "9001:9001"
-      - "9000:9000"
-    volumes:
-      - minio-data:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-    networks:
-      - appnet
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+    command: [minio, server, /minio_data, --console-address, ":9001"]
+    volumes: [minio-data:/minio_data]
+    networks: [appnet]
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     mem_limit: 1g
-    cpus: 0.4
+    cpus: 0.40
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
   milvus:
     image: milvusdb/milvus:v2.6.6
-    container_name: brainapi-milvus
-    command: ["milvus", "run", "standalone"]
-    security_opt:
-      - seccomp:unconfined
+    command: [milvus, run, standalone]
+    security_opt: [seccomp:unconfined, no-new-privileges:true]
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      COMMON_SECURITY_AUTHORIZATION_ENABLED: "true"
+      COMMON_SECURITY_DEFAULT_ROOT_PASSWORD: ${MILVUS_ROOT_PASSWORD:?MILVUS_ROOT_PASSWORD is required}
       MQ_TYPE: woodpecker
       MILVUS_COMMON_LOG_LEVEL: warn
-    volumes:
-      - milvus-data:/var/lib/milvus
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    networks:
-      - appnet
+    volumes: [milvus-data:/var/lib/milvus]
+    networks: [appnet]
     depends_on:
-      etcd:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+      etcd: {condition: service_healthy}
+      minio: {condition: service_healthy}
     restart: unless-stopped
     mem_limit: 2g
-    cpus: 0.6
+    cpus: 0.75
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 30s
-      start_period: 90s
-      timeout: 20s
-      retries: 3
+      test: ["CMD", "curl", "-fsS", "http://localhost:9091/healthz"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
 
   mongo:
-    image: mongo:8.0
-    container_name: brainapi-mongo
-    ports:
-      - "27017:27017"
+    image: mongo:8.0.16-noble
     environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-brainapi}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+    command: [mongod, --wiredTigerCacheSizeGB=1, --bind_ip_all]
     volumes:
       - mongo-data:/data/db
       - mongo-config:/data/configdb
-    command: >
-      mongod
-      --wiredTigerCacheSizeGB=5
-      --wiredTigerCollectionBlockCompressor=snappy
-      --wiredTigerIndexPrefixCompression=true
-      --logpath=/var/log/mongodb/mongod.log
-      --logappend
-      --bind_ip_all
-    networks:
-      - appnet
+    networks: [appnet]
     restart: unless-stopped
-    mem_limit: 1.5g
-    cpus: 0.4
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    cpus: 0.50
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD-SHELL", "mongosh --quiet --username \"$${MONGO_INITDB_ROOT_USERNAME}\" --password \"$${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval 'quit(db.adminCommand({ping:1}).ok ? 0 : 2)'"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   brainapi:
-    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
-    container_name: brainapi-api
-    ports:
-      - "8000:8000"
-    env_file:
-      - /root/.env
-    environment:
-      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
-      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
-      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-      BRAINAPI_PLUGINS: my-plugin:1.0.0,analytics-plugin
-    volumes:
-      - /root/gcp_credentials.json:/app/gcp_credentials.json
-      - brainapi-plugins:/app/plugins
-    command:
-      [
-        "-m",
-        "uvicorn",
-        "src.services.api.app:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-        "--workers",
-        "1",
-        "--timeout-keep-alive",
-        "30",
-        "--limit-concurrency",
-        "200",
-        "--backlog",
-        "2048",
-      ]
+    <<: *brainapi-common
+    command: [-m, uvicorn, src.services.api.app:app, --host, 0.0.0.0, --port, "8000", --workers, "1", --timeout-keep-alive, "30", --limit-concurrency, "200"]
     depends_on:
-      redis:
-        condition: service_healthy
-      neo4j:
-        condition: service_started
-      mongo:
-        condition: service_healthy
-      milvus:
-        condition: service_healthy
-    networks:
-      - appnet
-    restart: unless-stopped
+      redis: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+      mongo: {condition: service_healthy}
+      milvus: {condition: service_healthy}
     mem_limit: 4g
-    cpus: 2
+    cpus: 2.0
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test:
-        [
-          "CMD",
-          "curl",
-          "-f",
-          "http://localhost:8000/",
-          "-H",
-          "BrainPAT: ${BRAINPAT_TOKEN}",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 900s
-      start_interval: 30s
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
 
   brainapi-worker:
-    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
-    container_name: brainapi-worker
-    env_file:
-      - /root/.env
-    environment:
-      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
-      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
-      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
-      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-    volumes:
-      - /root/gcp_credentials.json:/app/gcp_credentials.json
-      - brainapi-plugins:/app/plugins
-    command:
-      [
-        "-m",
-        "celery",
-        "-A",
-        "src.workers.app",
-        "worker",
-        "--loglevel=info",
-        "--pool=threads",
-        "--without-gossip",
-        "--without-mingle",
-        "--concurrency=2",
-        "--max-tasks-per-child=50",
-      ]
+    <<: *brainapi-common
+    command: [-m, celery, -A, src.workers.app, worker, --loglevel=info, --pool=threads, --without-gossip, --without-mingle, --concurrency=2, --max-tasks-per-child=50]
     depends_on:
-      redis:
-        condition: service_healthy
-      neo4j:
-        condition: service_started
-      mongo:
-        condition: service_healthy
-      milvus:
-        condition: service_healthy
-    networks:
-      - appnet
-    restart: unless-stopped
+      redis: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+      mongo: {condition: service_healthy}
+      milvus: {condition: service_healthy}
     mem_limit: 4g
-    cpus: 2
+    cpus: 2.0
+    security_opt: [no-new-privileges:true]
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "python -m celery -A src.workers.app inspect ping --timeout 5 >/dev/null 2>&1 && q=$(redis-cli -h redis -p 6379 LLEN ingest_data 2>/dev/null || echo 0); [ \"$q\" -lt \"${CELERY_QUEUE_HEALTH_THRESHOLD:-50}\" ]",
-        ]
+        - CMD-SHELL
+        - >-
+          python -m celery -A src.workers.app inspect ping --timeout 5 >/dev/null 2>&1 &&
+          python -c 'import os,redis,sys; r=redis.Redis(host="redis",password=os.environ["REDIS_PASSWORD"]); sys.exit(r.llen("ingest_data") >= int(os.getenv("CELERY_QUEUE_HEALTH_THRESHOLD","50")))'
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 120s
-      start_interval: 30s
 
   brainapi-mcp:
-    image: ghcr.io/lumen-labs/brainapi:v2.9.7-dev
-    container_name: brainapi-mcp
-    ports:
-      - "8001:8001"
-    env_file:
-      - /root/.env
+    <<: *brainapi-common
     environment:
+      <<: *brainapi-environment
       MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-}
       MCP_RESOURCE_SERVER_URL: ${MCP_RESOURCE_SERVER_URL:-}
-      BRAINAPI_PLUGINS: ${BRAINAPI_PLUGINS:-}
-      PLUGIN_REGISTRY_URL: ${PLUGIN_REGISTRY_URL:-}
-      PLUGIN_PUBLISHER_ID: ${PLUGIN_PUBLISHER_ID:-}
-      PLUGIN_PUBLISHER_API_KEY: ${PLUGIN_PUBLISHER_API_KEY:-}
-    volumes:
-      - /root/gcp_credentials.json:/app/gcp_credentials.json
-      - brainapi-plugins:/app/plugins
-    command:
-      [
-        "-m",
-        "uvicorn",
-        "src.services.mcp.app:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8001",
-        "--timeout-keep-alive",
-        "30",
-      ]
+    command: [-m, uvicorn, src.services.mcp.app:app, --host, 0.0.0.0, --port, "8001", --timeout-keep-alive, "30"]
     depends_on:
-      redis:
-        condition: service_healthy
-      neo4j:
-        condition: service_started
-      mongo:
-        condition: service_healthy
-      milvus:
-        condition: service_healthy
-    networks:
-      - appnet
-    restart: unless-stopped
-    mem_limit: 4g
-    cpus: 2
+      redis: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+      mongo: {condition: service_healthy}
+      milvus: {condition: service_healthy}
+    mem_limit: 2g
+    cpus: 1.0
+    security_opt: [no-new-privileges:true]
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'code=$(curl -s -o /dev/null -w ''%{http_code}'' http://localhost:8001/); test "$code" = ''200'' || test "$code" = ''405''',
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
       start_period: 60s
 
 networks:

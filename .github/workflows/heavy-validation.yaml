@@ -1,0 +1,135 @@
+name: Heavy production validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  heavy-smoke-and-restore:
+    runs-on: [self-hosted, linux, x64, brainapi-heavy]
+    timeout-minutes: 90
+    env:
+      BRAINAPI_IMAGE: brainapi:ci
+      BRAINAPI_ENV_FILE: env.heavy.example
+      REDIS_PASSWORD: ci-redis-password
+      NEO4J_PASSWORD: ci-neo4j-password
+      MONGO_PASSWORD: ci-mongo-password
+      MINIO_ACCESS_KEY: ci-minio-access
+      MINIO_SECRET_KEY: ci-minio-secret-password
+      MILVUS_ROOT_PASSWORD: ci-milvus-password
+      MILVUS_TOKEN: root:ci-milvus-password
+      BRAINPAT_TOKEN: ci-system-token
+      BACKUP_DIR: ${{ github.workspace }}/.backup-artifacts
+      RELEASE_ARTIFACT_DIR: ${{ github.workspace }}/release-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the exact audited candidate image
+        timeout-minutes: 45
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const shas = [...new Set([
+              context.payload.pull_request?.head?.sha,
+              context.sha,
+            ].filter(Boolean))];
+            const deadline = Date.now() + 40 * 60 * 1000;
+            while (Date.now() < deadline) {
+              let run;
+              for (const sha of shas) {
+                const response = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: "quality.yaml",
+                  head_sha: sha,
+                  status: "completed",
+                  per_page: 20,
+                });
+                run = response.data.workflow_runs[0];
+                if (run) break;
+              }
+              if (run) {
+                if (run.conclusion !== "success") {
+                  core.setFailed(`Quality workflow ${run.id} concluded ${run.conclusion}`);
+                  return;
+                }
+                const artifacts = await github.paginate(
+                  github.rest.actions.listWorkflowRunArtifacts,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                    per_page: 100,
+                  }
+                );
+                const artifact = artifacts.find(
+                  (item) => item.name === "light-production-validation" && !item.expired
+                );
+                if (!artifact) {
+                  core.setFailed(`Quality workflow ${run.id} has no candidate image artifact`);
+                  return;
+                }
+                const archive = await github.rest.actions.downloadArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                  archive_format: "zip",
+                });
+                fs.writeFileSync("quality-artifacts.zip", Buffer.from(archive.data));
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 30000));
+            }
+            core.setFailed(`Timed out waiting for successful Quality artifacts for ${shas.join(" or ")}`);
+      - name: Load and verify the shared candidate image
+        run: |
+          unzip -q quality-artifacts.zip -d quality-artifacts
+          image_archive=$(find quality-artifacts -name brainapi-image.tar.gz -print -quit)
+          security_file=$(find quality-artifacts -name security.json -print -quit)
+          test -n "$image_archive"
+          test -n "$security_file"
+          gzip -dc "$image_archive" | docker load
+          expected=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_digest"])' "$security_file")
+          actual=$(docker image inspect "$BRAINAPI_IMAGE" --format '{{.Id}}')
+          test "$actual" = "$expected"
+      - name: Require runner capacity
+        run: |
+          awk '/MemTotal/ { exit !($2 >= 16000000) }' /proc/meminfo
+          test "$(uname -m)" = x86_64
+      - run: docker compose -f deploy/docker-compose.heavy.yaml config -q
+      - name: Clean heavy startup
+        run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml -f deploy/docker-compose.ci.yaml up -d --wait
+      - name: Heavy product smoke
+        run: |
+          curl --fail --retry 20 --retry-delay 5 http://localhost/health
+          python scripts/production_smoke.py exercise --profile heavy --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
+      - name: Backup and verify
+        id: backup
+        run: |
+          archive=$(deploy/brainapi-backup backup --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --compose-file deploy/docker-compose.ci.yaml --backup-dir "$BACKUP_DIR" | tail -1)
+          deploy/brainapi-backup verify --profile heavy --env-file deploy/env.heavy.example --archive "$archive"
+          cp "$archive/manifest.json" "$RELEASE_ARTIFACT_DIR/backup-heavy-manifest.json"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Restore into clean volumes
+        run: |
+          docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml -f deploy/docker-compose.ci.yaml down --volumes
+          deploy/brainapi-backup restore --profile heavy --project-name brainapi-heavy-ci --env-file deploy/env.heavy.example --compose-file deploy/docker-compose.ci.yaml --archive "${{ steps.backup.outputs.archive }}"
+          curl --fail --retry 20 --retry-delay 5 http://localhost/health
+          python scripts/production_smoke.py verify-restore --profile heavy --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml -f deploy/docker-compose.ci.yaml logs --no-color
+      - name: Clean heavy volumes
+        if: always()
+        run: docker compose --project-name brainapi-heavy-ci -f deploy/docker-compose.heavy.yaml -f deploy/docker-compose.ci.yaml down --volumes --remove-orphans
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: heavy-production-validation
+          path: release-artifacts/

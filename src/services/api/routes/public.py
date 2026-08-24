@@ -1,0 +1,111 @@
+"""Public, read-only API surfaces intended for discovery and evaluation."""
+
+from __future__ import annotations
+
+import os
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from src.config import config
+from src.constants.data import BRAIN_VERSION
+from src.services.api.constants.requests import SearchRequestBody, SearchResponse
+from src.services.api.controllers.search import search as search_controller
+from src.services.api.errors import ErrorResponse
+
+
+class HealthResponse(BaseModel):
+    status: str = Field(description="Service health status.")
+    service: str = Field(description="Service name.")
+    version: str = Field(description="Running BrainAPI version.")
+
+
+PUBLIC_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Public demo is disabled"},
+    422: {"model": ErrorResponse, "description": "Invalid query"},
+    500: {"model": ErrorResponse, "description": "Internal service error"},
+    503: {"model": ErrorResponse, "description": "Demo search is unavailable"},
+}
+
+public_router = APIRouter(tags=["public"])
+
+
+@public_router.get(
+    "/health",
+    response_model=HealthResponse,
+    openapi_extra={"security": []},
+)
+async def health() -> HealthResponse:
+    """Return public liveness metadata without accessing customer data."""
+
+    return HealthResponse(status="ok", service="brainapi", version=BRAIN_VERSION)
+
+
+@public_router.get(
+    "/demo/search",
+    response_model=SearchResponse,
+    responses=PUBLIC_ERROR_RESPONSES,
+    openapi_extra={"security": []},
+)
+async def demo_search(
+    query: str = Query(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Search query over the public BrainAPI documentation corpus.",
+    ),
+    k: int = Query(
+        10,
+        ge=1,
+        le=10,
+        description="Number of public documentation passages to return (maximum 10).",
+    ),
+) -> SearchResponse:
+    """Search the fixed public demo brain using passages-only BM25 retrieval.
+
+    This endpoint never accepts a caller-selected brain and exposes no write path.
+    Production applies an additional per-client rate limit at the edge.
+    """
+
+    if os.getenv("PUBLIC_DEMO_ENABLED", "false").strip().lower() != "true":
+        raise HTTPException(status_code=404, detail="Public demo search is disabled")
+
+    brain_id = os.getenv("PUBLIC_DEMO_BRAIN_ID", "agentdemo").strip()
+    if not brain_id or not brain_id.isalnum() or brain_id == "system":
+        raise HTTPException(
+            status_code=503,
+            detail="Public demo brain is not configured correctly",
+        )
+
+    try:
+        configured_max = int(os.getenv("PUBLIC_DEMO_MAX_K", "10"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="PUBLIC_DEMO_MAX_K must be an integer",
+        ) from exc
+    max_k = min(max(configured_max, 1), 10)
+    if k > max_k:
+        raise HTTPException(
+            status_code=422,
+            detail=f"k must be less than or equal to {max_k}",
+        )
+
+    if (
+        not config.search_enabled
+        or not config.search_use_bm25
+        or config.search_use_dense
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Public demo requires BM25-only Search configuration",
+        )
+
+    return await search_controller(
+        SearchRequestBody(
+            query=query,
+            k=k,
+            channels=["passages"],
+            brain_id=brain_id,
+        )
+    )

@@ -11,6 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 
 from typing import List, Literal, Optional
 
+from fastapi import HTTPException
 from starlette.responses import JSONResponse
 from src.core.search.entity_context import EntityContext
 from src.core.search.entity_info import EventSynergyRetriever
@@ -114,9 +115,9 @@ async def get_entity_sibilings(
         )
     )
     if target_node is None:
-        return JSONResponse(
+        raise HTTPException(
             status_code=404,
-            content={"detail": "No entity found matching the target."},
+            detail="No entity found matching the target.",
         )
     return JSONResponse(
         content={
@@ -173,9 +174,9 @@ async def get_recommendations(
         behavior_weights=behavior_weights,
     )
     if target_node is None:
-        return JSONResponse(
+        raise HTTPException(
             status_code=404,
-            content={"detail": "No entity found matching the target."},
+            detail="No entity found matching the target.",
         )
     items = [
         RecommendItem(

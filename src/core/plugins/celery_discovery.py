@@ -32,22 +32,27 @@ def discover_plugin_celery(plugins_dir: Path) -> tuple[tuple, dict]:
             continue
 
         plugin_dir_str = str(child)
-        if plugin_dir_str not in sys.path:
+        added_plugin_path = plugin_dir_str not in sys.path
+        if added_plugin_path:
             sys.path.insert(0, plugin_dir_str)
-
-        safe_name = child.name.replace("-", "_")
-        celery_mod = _load_module(
-            child,
-            "workers/celery.py",
-            f"brainapi_plugin_{safe_name}_workers_celery",
-        )
-        _load_module(
-            child,
-            "workers/tasks.py",
-            f"brainapi_plugin_{safe_name}_workers_tasks",
-        )
-        queues.extend(getattr(celery_mod, "QUEUES", ()))
-        routes.update(getattr(celery_mod, "ROUTES", {}))
+        try:
+            safe_name = child.name.replace("-", "_")
+            celery_mod = _load_module(
+                child,
+                "workers/celery.py",
+                f"brainapi_plugin_{safe_name}_workers_celery",
+            )
+            _load_module(
+                child,
+                "workers/tasks.py",
+                f"brainapi_plugin_{safe_name}_workers_tasks",
+            )
+            queues.extend(getattr(celery_mod, "QUEUES", ()))
+            routes.update(getattr(celery_mod, "ROUTES", {}))
+        finally:
+            if added_plugin_path and plugin_dir_str in sys.path:
+                sys.path.remove(plugin_dir_str)
+            sys.path_importer_cache.pop(plugin_dir_str, None)
 
     return tuple(queues), routes
 

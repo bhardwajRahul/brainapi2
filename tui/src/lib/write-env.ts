@@ -65,6 +65,8 @@ export async function writeEnvFromChoices(choices: InitChoices): Promise<void> {
   values[ENV_KEYS.runGraphConsolidator] = "true";
   values[ENV_KEYS.celeryWorkerConcurrency] = 4;
 
+  applySearchValues(values, choices);
+
   values[ENV_KEYS.brainpatToken] = choices.auth.brainpatToken;
   values[ENV_KEYS.enabledPlugins] = choices.plugins.map((plugin) => plugin.name).join(",");
   values["ENV"] = "development";
@@ -83,6 +85,25 @@ export async function writeEnvFromChoices(choices: InitChoices): Promise<void> {
 
   applyEnvValues(env, values);
   await saveEnv(env);
+}
+
+function applySearchValues(
+  values: Record<string, string | number | undefined>,
+  choices: InitChoices,
+): void {
+  const search = choices.search ?? { enabled: false, retrieval: "hybrid" };
+  const enabled = search.enabled;
+  const retrieval = search.retrieval ?? "hybrid";
+  values[ENV_KEYS.searchEnabled] = enabled ? "true" : "false";
+  values[ENV_KEYS.searchUseDense] =
+    !enabled || retrieval === "hybrid" || retrieval === "dense" ? "true" : "false";
+  values[ENV_KEYS.searchUseBm25] =
+    !enabled || retrieval === "hybrid" || retrieval === "bm25" ? "true" : "false";
+  values[ENV_KEYS.searchFusion] = "rrf";
+  values[ENV_KEYS.searchFusionAlpha] = "0.5";
+  values[ENV_KEYS.searchBm25K1] = "1.2";
+  values[ENV_KEYS.searchBm25B] = "0.75";
+  values[ENV_KEYS.contextPassageMode] = enabled ? "hybrid" : "hybrid";
 }
 
 function applyPostgresValues(

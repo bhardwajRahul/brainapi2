@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import logging
 import shutil
@@ -80,11 +81,17 @@ class PluginLoader:
             return False
 
         plugin_dir_str = str(plugin_dir)
-        added_plugin_path = False
-        if plugin_dir_str not in sys.path:
-            sys.path.insert(0, plugin_dir_str)
-            added_plugin_path = True
+        original_sys_path = list(sys.path)
+        sys.path[:] = [
+            plugin_dir_str,
+            *[
+                entry
+                for entry in original_sys_path
+                if entry != plugin_dir_str and not self._is_plugin_path(entry)
+            ],
+        ]
         self._clear_local_plugin_namespaces()
+        importlib.invalidate_caches()
 
         module_name = self._entry_point_resolver.resolve(
             entry_point=manifest.entry_point,
@@ -103,29 +110,40 @@ class PluginLoader:
             )
         except Exception as exc:
             logger.error("Failed to import plugin '%s' (module: %s): %s", manifest.name, module_name, exc)
-            if added_plugin_path and plugin_dir_str in sys.path:
-                sys.path.remove(plugin_dir_str)
+            self._cleanup_plugin_imports(plugin_dir_str, original_sys_path)
             return False
 
         register_fn = getattr(module, "register", None)
         if register_fn is None or not callable(register_fn):
             logger.error("Plugin '%s' has no callable 'register' function in '%s'", manifest.name, module_name)
-            if added_plugin_path and plugin_dir_str in sys.path:
-                sys.path.remove(plugin_dir_str)
+            self._cleanup_plugin_imports(plugin_dir_str, original_sys_path)
             return False
 
         try:
             register_fn(self.context)
             self._loaded[manifest.name] = manifest
             logger.info("Plugin '%s' v%s loaded successfully", manifest.name, manifest.version)
-            if added_plugin_path and plugin_dir_str in sys.path:
-                sys.path.remove(plugin_dir_str)
+            self._cleanup_plugin_imports(plugin_dir_str, original_sys_path)
             return True
         except Exception as exc:
             logger.error("Plugin '%s' register() raised an exception: %s", manifest.name, exc, exc_info=True)
-            if added_plugin_path and plugin_dir_str in sys.path:
-                sys.path.remove(plugin_dir_str)
+            self._cleanup_plugin_imports(plugin_dir_str, original_sys_path)
             return False
+
+    @staticmethod
+    def _is_plugin_path(path_entry: str) -> bool:
+        try:
+            return "plugins" in Path(path_entry).parts
+        except (TypeError, ValueError):
+            return False
+
+    def _cleanup_plugin_imports(
+        self, plugin_dir: str, original_sys_path: list[str]
+    ) -> None:
+        sys.path[:] = original_sys_path
+        self._clear_local_plugin_namespaces()
+        sys.path_importer_cache.pop(plugin_dir, None)
+        importlib.invalidate_caches()
 
     def _clear_local_plugin_namespaces(self) -> None:
         namespace_roots = (

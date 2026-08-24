@@ -194,25 +194,64 @@ class PostgreSQLGraphStore:
         ON kg_topic_sessions(session_id);
     """
 
+    _SEARCH_DOCUMENT_SQL = (
+        "coalesce(data->>'name', '') || ' ' || "
+        "coalesce(data->>'description', '') || ' ' || "
+        "coalesce(data->>'search_text', '')"
+    )
+    _SEARCH_DDL = f"""
+    ALTER TABLE kg_nodes
+        ADD COLUMN IF NOT EXISTS search_tsv tsvector
+        GENERATED ALWAYS AS (
+            to_tsvector('english'::regconfig, {_SEARCH_DOCUMENT_SQL})
+        ) STORED;
+    ALTER TABLE kg_nodes
+        ADD COLUMN IF NOT EXISTS search_len integer
+        GENERATED ALWAYS AS (
+            GREATEST(
+                length(to_tsvector('english'::regconfig, {_SEARCH_DOCUMENT_SQL})),
+                0
+            )
+        ) STORED;
+    CREATE INDEX IF NOT EXISTS idx_kg_nodes_search_tsv
+        ON kg_nodes USING gin (search_tsv);
+    """
+
     def __init__(self) -> None:
         config.postgresql.validate_credentials()
         self._brains: dict[str, _BrainGraph] = {}
         self._schema_ready: set[str] = set()
+        self._search_ready_brains: set[str] = set()
         self._schema_lock = threading.Lock()
         self._brains_lock = threading.RLock()
 
     def _ensure_brain_schema(self, brain_id: str) -> None:
-        if brain_id in self._schema_ready:
+        needs_base = brain_id not in self._schema_ready
+        needs_search = (
+            bool(config.search_enabled) and brain_id not in self._search_ready_brains
+        )
+        if not needs_base and not needs_search:
             return
         with self._schema_lock:
-            if brain_id in self._schema_ready:
+            needs_base = brain_id not in self._schema_ready
+            needs_search = (
+                bool(config.search_enabled)
+                and brain_id not in self._search_ready_brains
+            )
+            if not needs_base and not needs_search:
                 return
             ensure_brain_database(brain_id)
             with borrow(get_brain_pool(brain_id)) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(self._DDL)
-                conn.commit()
-            self._schema_ready.add(brain_id)
+                if needs_base:
+                    with conn.cursor() as cur:
+                        cur.execute(self._DDL)
+                    conn.commit()
+                    self._schema_ready.add(brain_id)
+                if needs_search:
+                    with conn.cursor() as cur:
+                        cur.execute(self._SEARCH_DDL)
+                    conn.commit()
+                    self._search_ready_brains.add(brain_id)
 
     @contextmanager
     def _connection(self, brain_id: str):
@@ -222,6 +261,122 @@ class PostgreSQLGraphStore:
 
     def _ensure_brain_row(self, brain_id: str) -> None:
         self._ensure_brain_schema(brain_id)
+
+    def search_nodes_bm25(
+        self,
+        text: str,
+        brain_id: str,
+        *,
+        limit: int = 10,
+        node_labels: list[str] | None = None,
+        node_uuids: list[str] | None = None,
+    ) -> list[tuple[str, float, dict]]:
+        if not config.search_enabled or not text or not str(text).strip() or limit <= 0:
+            return []
+        self._ensure_brain_schema(brain_id)
+        k1 = float(config.search_bm25_k1)
+        b = float(config.search_bm25_b)
+        labels = [
+            str(item).strip().upper()
+            for item in (node_labels or [])
+            if str(item).strip()
+        ]
+        uuids = [str(item).strip() for item in (node_uuids or []) if str(item).strip()]
+        sql = """
+            WITH query_lexemes AS (
+                SELECT unnest(tsvector_to_array(to_tsvector('english', %s)))
+                    AS lexeme
+            ),
+            coll AS (
+                SELECT
+                    COUNT(*)::double precision AS n_docs,
+                    COALESCE(AVG(GREATEST(search_len, 1)), 1)::double precision AS avgdl
+                FROM kg_nodes
+            ),
+            idf AS (
+                SELECT
+                    s.word AS lexeme,
+                    ln(
+                        1.0 + (coll.n_docs - s.ndoc + 0.5)
+                        / (s.ndoc + 0.5)
+                    ) AS idf
+                FROM ts_stat('SELECT search_tsv FROM kg_nodes') AS s
+                CROSS JOIN coll
+                WHERE s.word IN (SELECT lexeme FROM query_lexemes)
+            ),
+            docs AS (
+                SELECT
+                    n.uuid,
+                    n.data,
+                    GREATEST(n.search_len, 1)::double precision AS dl,
+                    lex.lexeme,
+                    COALESCE(array_length(lex.positions, 1), 1)::double precision AS tf
+                FROM kg_nodes n
+                CROSS JOIN LATERAL unnest(n.search_tsv) AS lex(lexeme, positions)
+                WHERE n.search_tsv @@ plainto_tsquery('english', %s)
+                  AND lex.lexeme IN (SELECT lexeme FROM query_lexemes)
+                  AND (%s::text[] IS NULL OR n.uuid = ANY(%s))
+                  AND (
+                    %s::text[] IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements_text(
+                            coalesce(n.data->'labels', '[]'::jsonb)
+                        ) AS lbl
+                        WHERE upper(lbl) = ANY(%s)
+                    )
+                  )
+            )
+            SELECT
+                d.uuid,
+                d.data,
+                SUM(
+                    COALESCE(i.idf, 0)
+                    * (d.tf * (%s + 1.0))
+                    / (
+                        d.tf
+                        + %s * (
+                            1.0 - %s
+                            + %s * d.dl / NULLIF(c.avgdl, 0)
+                        )
+                    )
+                ) AS bm25
+            FROM docs d
+            CROSS JOIN coll c
+            LEFT JOIN idf i ON i.lexeme = d.lexeme
+            GROUP BY d.uuid, d.data
+            ORDER BY bm25 DESC, d.uuid ASC
+            LIMIT %s
+        """
+        label_param = labels or None
+        uuid_param = uuids or None
+        params = (
+            text,
+            text,
+            uuid_param,
+            uuid_param,
+            label_param,
+            label_param,
+            k1,
+            k1,
+            b,
+            b,
+            limit,
+        )
+        with self._connection(brain_id) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+        out: list[tuple[str, float, dict]] = []
+        for row in rows:
+            node_id = str(row.get("uuid") or "").strip()
+            if not node_id:
+                continue
+            data = row.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            out.append((node_id, float(row.get("bm25") or 0.0), data))
+        return out
 
     def get_brain(self, brain_id: str) -> _BrainGraph:
         return self._load_brain(brain_id)

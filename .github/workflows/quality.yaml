@@ -1,0 +1,149 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+      - run: pip install poetry==2.1.3
+      - name: Verify locks without regeneration
+        run: |
+          poetry check --lock
+          uv lock --check
+      - run: poetry install
+      - run: poetry run python -m compileall -q src tests deploy/backup_restore.py
+      - run: poetry run pytest -q
+      - name: Audit actual Python environment
+        run: uvx pip-audit --path .venv/lib/python3.12/site-packages
+
+  benchmark-helpers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m venv benchmarks/.venv
+      - run: benchmarks/.venv/bin/pip install -r benchmarks/requirements.txt pytest
+      - run: benchmarks/.venv/bin/pytest -q benchmarks/locomo/test_sota_helpers.py benchmarks/beam/test_beam_helpers.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [console, tui]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+      - if: matrix.project == 'console'
+        run: npm audit --omit=dev --audit-level=high
+      - if: matrix.project == 'tui'
+        run: npm run typecheck
+      - run: npm run build
+
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-stdio-http-bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.0
+      - run: cargo test --locked
+
+  image-light-smoke:
+    runs-on: ubuntu-latest
+    needs: [python, benchmark-helpers, frontend, rust]
+    env:
+      BRAINAPI_IMAGE: brainapi:ci
+      BRAINAPI_ENV_FILE: env.light.example
+      REDIS_PASSWORD: ci-redis-password
+      POSTGRES_PASSWORD: ci-postgres-password
+      POSTGRES_USERNAME: brainapi
+      BRAINPAT_TOKEN: ci-system-token
+      BACKUP_DIR: ${{ github.workspace }}/.backup-artifacts
+      RELEASE_ARTIFACT_DIR: ${{ github.workspace }}/release-artifacts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Validate Compose and secret rejection
+        run: |
+          docker compose -f deploy/docker-compose.light.yaml config -q
+          if env -u REDIS_PASSWORD docker compose -f deploy/docker-compose.light.yaml config -q; then exit 1; fi
+      - name: Build exact test image
+        run: docker build --platform linux/amd64 --load -t "$BRAINAPI_IMAGE" .
+      - name: Export exact candidate image
+        run: |
+          mkdir -p "$RELEASE_ARTIFACT_DIR"
+          docker save "$BRAINAPI_IMAGE" | gzip -1 > "$RELEASE_ARTIFACT_DIR/brainapi-image.tar.gz"
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: brainapi:ci
+          format: spdx-json
+          output-file: brainapi.spdx.json
+      - name: Audit actual image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: brainapi:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: json
+          output: trivy.json
+      - name: Light profile smoke
+        run: |
+          docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml up -d --wait
+          curl --fail --retry 12 --retry-delay 5 http://localhost/health
+          python scripts/production_smoke.py exercise --profile light --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
+      - name: Light backup and clean restore
+        run: |
+          archive=$(deploy/brainapi-backup backup --profile light --project-name brainapi-ci --env-file deploy/env.light.example --compose-file deploy/docker-compose.ci.yaml --backup-dir "$BACKUP_DIR" | tail -1)
+          deploy/brainapi-backup verify --profile light --env-file deploy/env.light.example --archive "$archive"
+          cp "$archive/manifest.json" "$RELEASE_ARTIFACT_DIR/backup-light-manifest.json"
+          docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml down --volumes
+          deploy/brainapi-backup restore --profile light --project-name brainapi-ci --env-file deploy/env.light.example --compose-file deploy/docker-compose.ci.yaml --archive "$archive"
+          curl --fail --retry 12 --retry-delay 5 http://localhost/health
+          python scripts/production_smoke.py verify-restore --profile light --system-token "$BRAINPAT_TOKEN" --artifact-dir "$RELEASE_ARTIFACT_DIR"
+      - name: Record exact-image security evidence
+        run: |
+          cp brainapi.spdx.json "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json"
+          python scripts/write_security_artifact.py --trivy trivy.json --sbom "$RELEASE_ARTIFACT_DIR/brainapi.spdx.json" --image "$BRAINAPI_IMAGE" --output "$RELEASE_ARTIFACT_DIR/security.json"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml logs --no-color
+      - name: Clean CI volumes
+        if: always()
+        run: docker compose --project-name brainapi-ci -f deploy/docker-compose.light.yaml -f deploy/docker-compose.ci.yaml down --volumes --remove-orphans
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: light-production-validation
+          path: |
+            release-artifacts/
+            trivy.json

@@ -76,8 +76,22 @@ class BehaviorWeightTests(unittest.TestCase):
         self.assertEqual(behavior_weight("View"), 0.2)
         self.assertEqual(behavior_weight("AddToCart"), 0.5)
 
-    def test_unknown_defaults_to_one(self):
-        self.assertEqual(behavior_weight("WeirdEvent"), 1.0)
+    def test_unknown_defaults_to_view_weight(self):
+        self.assertEqual(behavior_weight("WeirdEvent"), 0.2)
+
+    def test_favorite_between_cart_and_purchase(self):
+        self.assertEqual(behavior_weight("Favorite"), 0.7)
+        self.assertEqual(behavior_weight("wishlist"), 0.7)
+        self.assertEqual(behavior_weight("add_to_favorite"), 0.7)
+        self.assertGreater(behavior_weight("Favorite"), behavior_weight("AddToCart"))
+        self.assertLess(behavior_weight("Favorite"), behavior_weight("Purchase"))
+
+    def test_follow_is_half(self):
+        self.assertEqual(behavior_weight("Follow"), 0.5)
+        self.assertEqual(behavior_weight("FLW"), 0.5)
+        self.assertEqual(behavior_weight("follow"), 0.5)
+        self.assertGreater(behavior_weight("Follow"), behavior_weight("WeirdEvent"))
+        self.assertLess(behavior_weight("Follow"), behavior_weight("Favorite"))
 
     def test_custom_table(self):
         self.assertEqual(behavior_weight("View", {"view": 0.9}), 0.9)

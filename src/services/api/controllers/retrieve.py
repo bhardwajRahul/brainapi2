@@ -26,6 +26,12 @@ from src.core.search.fact_filter import (
     personalized_pagerank,
     reciprocal_rank_fusion,
 )
+from src.core.search.hybrid import (
+    collect_bm25_passages,
+    collect_dense_passages,
+    collect_ilike_passages,
+    fuse_passage_lists,
+)
 from src.core.search.relationships import search_relationships
 from src.lib.tracing.profiler import profile_request, profile_stage
 from src.utils.vector_search import VectorSearchFacade
@@ -43,6 +49,7 @@ from src.services.kg_agent.main import embeddings_adapter, vector_store_adapter
 from src.utils.dates import parse_date_string, to_naive_utc
 from src.utils.similarity.vectors import cosine_similarity
 from src.utils.nlp.ner import _entity_extractor
+from src.config import config
 
 vector_search = VectorSearchFacade(vector_store_adapter)
 
@@ -857,10 +864,12 @@ def _hub_completeness_score(candidate: dict[str, Any]) -> float:
     return score
 
 
-def _fact_recency_score(candidate: dict[str, Any]) -> float:
+def _fact_recency_score(
+    candidate: dict[str, Any], *, now: datetime | None = None
+) -> float:
     triple = candidate.get("triple") or ()
     best = 0.0
-    now = datetime.now(tz=None)
+    now = now or datetime.now(tz=None)
     for node in triple[0::2] if triple else ():
         raw = getattr(node, "happened_at", None)
         if not raw:
@@ -875,12 +884,14 @@ def _fact_recency_score(candidate: dict[str, Any]) -> float:
     return best
 
 
-def _relevance_score(candidate: dict[str, Any]) -> float:
+def _relevance_score(
+    candidate: dict[str, Any], *, now: datetime | None = None
+) -> float:
     distance = _candidate_distance(candidate)
     distance_term = 1.0 / (1.0 + max(0.0, distance))
     ppr_term = float(candidate.get("ppr_mass") or 0.0)
     completeness = _hub_completeness_score(candidate) / 3.8
-    recency = _fact_recency_score(candidate)
+    recency = _fact_recency_score(candidate, now=now)
     topic_boost = 0.08 if candidate.get("topic_preferred") else 0.0
     return (
         0.45 * distance_term
@@ -939,12 +950,14 @@ def _bridge_reserve_ok(candidate: dict[str, Any]) -> bool:
     return True
 
 
-def _prepare_diversify_item(candidate: dict[str, Any]) -> dict[str, Any]:
+def _prepare_diversify_item(
+    candidate: dict[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
     key = candidate.get("key") or ("", "")
     is_bridge = _is_bridge_candidate(candidate)
     return {
         "candidate": candidate,
-        "relevance": _relevance_score(candidate),
+        "relevance": _relevance_score(candidate, now=now),
         "hub": _event_hub_id(candidate),
         "sessions": frozenset(_candidate_session_ids(candidate)),
         "kind": _hub_leg_kind(candidate),
@@ -963,11 +976,20 @@ def _mmr_pick_index(
     best_idx = 0
     best_mmr = None
     best_tie = None
+    selected_kinds_by_hub: dict[str, set[str]] = defaultdict(set)
+    for selected in selected_meta:
+        selected_kinds_by_hub[selected["hub"]].add(selected["kind"])
     for idx, item in enumerate(remaining):
         relevance = item["relevance"]
         hub = item["hub"]
         sessions = item["sessions"]
-        complementary = _is_complementary_hub_leg(selected_meta, item)
+        complementary = (
+            item["kind"] in {"spine", "context"}
+            and bool(
+                selected_kinds_by_hub.get(item["hub"], set())
+                & ({"spine", "context"} - {item["kind"]})
+            )
+        )
         if complementary:
             hub_pen = 0.0
             sess_pen = 0.0
@@ -1066,7 +1088,10 @@ def _diversify_facts(
     if len(ranked) <= max_facts:
         return list(ranked)
 
-    prepared = [_prepare_diversify_item(candidate) for candidate in ranked]
+    ranking_now = datetime.now(tz=None)
+    prepared = [
+        _prepare_diversify_item(candidate, now=ranking_now) for candidate in ranked
+    ]
     prepared.sort(key=lambda item: (-item["relevance"], item["tie"]))
 
     selected: list[dict[str, Any]] = []
@@ -1681,45 +1706,52 @@ def _retrieve_passages(
     text: str, brain_id: str, *, limit: int
 ) -> list[tuple[str, float, str]]:
     """Return (chunk_id, score, text) ranked passages via vector + keyword fusion."""
+    mode = (
+        config.context_passage_mode if config.search_enabled else "ilike"
+    )
+    use_dense = mode in ("hybrid", "dense", "ilike")
+    use_bm25 = mode in ("hybrid", "bm25")
+    use_ilike = mode == "ilike"
     with profile_stage("passages.retrieve", blocking=True, queries=1):
-        with profile_stage("embed.query"):
-            text_embeddings = embeddings_adapter.embed_text(text)
-        with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
-            vector_hits = vector_search.search_data(
-                text_embeddings.embeddings,
-                brain_id=brain_id,
-                k=max(limit, _PASSAGE_K),
-            )
         vector_ids: list[str] = []
-        id_to_text: dict[str, str] = {}
         id_to_distance: dict[str, float] = {}
-        for vector in vector_hits:
-            meta = vector.metadata or {}
-            resource_id = meta.get("resource_id") or getattr(vector, "id", None)
-            if not resource_id:
-                continue
-            resource_id = str(resource_id)
-            vector_ids.append(resource_id)
-            id_to_distance[resource_id] = (
-                float(vector.distance)
-                if vector.distance is not None
-                else float("inf")
-            )
+        if use_dense:
+            with profile_stage("embed.query"):
+                text_embeddings = embeddings_adapter.embed_text(text)
+            with profile_stage("vector.search_data", k=max(limit, _PASSAGE_K)):
+                vector_ids, id_to_distance = collect_dense_passages(
+                    vector_search,
+                    text_embeddings.embeddings,
+                    brain_id,
+                    max(limit, _PASSAGE_K),
+                )
 
         keyword_ids: list[str] = []
-        with profile_stage("data.keyword_search"):
-            try:
-                search_result = data_adapter.search(text, brain_id)
-                for chunk in getattr(search_result, "text_chunks", None) or []:
-                    chunk_id = str(getattr(chunk, "id", "") or "")
-                    if not chunk_id:
-                        continue
-                    keyword_ids.append(chunk_id)
-                    id_to_text[chunk_id] = getattr(chunk, "text", "") or ""
-            except Exception:
-                pass
+        id_to_text: dict[str, str] = {}
+        if use_bm25:
+            with profile_stage("data.bm25_search"):
+                try:
+                    keyword_ids, _, id_to_text = collect_bm25_passages(
+                        data_adapter,
+                        text,
+                        brain_id,
+                        max(limit, _PASSAGE_K),
+                    )
+                except Exception:
+                    pass
+        elif use_ilike:
+            with profile_stage("data.keyword_search"):
+                try:
+                    keyword_ids, id_to_text = collect_ilike_passages(
+                        data_adapter, text, brain_id
+                    )
+                except Exception:
+                    pass
 
-        fused = reciprocal_rank_fusion([vector_ids, keyword_ids])
+        fused = fuse_passage_lists(
+            vector_ids if use_dense else [],
+            keyword_ids,
+        )
         ranked_ids = [item for item, _ in fused[:limit]]
         missing = [cid for cid in ranked_ids if cid not in id_to_text]
         if missing:
@@ -2069,7 +2101,7 @@ async def _build_context(
         except Exception as exc:
             topic_detail["error"] = str(exc)[:120]
 
-    with profile_stage("facts.diversify", max_facts=max_facts) as detail:
+    with profile_stage("fact_filter") as detail:
         if request.apply_fact_filter and fact_filter_adapter is not None and ranked:
             detail["filter_applied"] = True
             keep = filter_relevant_facts(
@@ -2084,18 +2116,21 @@ async def _build_context(
         else:
             detail["filter_applied"] = False
             filtered = ranked
+
+    with profile_stage("facts.diversify", max_facts=max_facts) as detail:
         filtered = _rank_facts_with_completeness(filtered)
         curated = _diversify_facts(filtered, max_facts=max_facts)
         detail["candidates"] = len(filtered)
         detail["curated"] = len(curated)
 
-    temporal_conflicts = _temporal_conflict_meta(curated)
-
-    text_lines, triples, graph_session_ids = _build_fact_channel(
-        curated, chunk_sessions
-    )
-
-    source_passages = source_passages[:max_passages]
+    with profile_stage("context.assemble") as detail:
+        temporal_conflicts = _temporal_conflict_meta(curated)
+        text_lines, triples, graph_session_ids = _build_fact_channel(
+            curated, chunk_sessions
+        )
+        source_passages = source_passages[:max_passages]
+        detail["facts"] = len(text_lines)
+        detail["passages"] = len(source_passages)
 
     insufficient = False
     if request.sufficiency_retry:

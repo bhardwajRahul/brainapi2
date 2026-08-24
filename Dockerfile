@@ -1,7 +1,18 @@
 # syntax=docker/dockerfile:1.4
 
-# ── Stage 1: builder ────────────────────────────────────────
-FROM python:3.11-slim AS builder
+# ── Stage 1: Console builder ────────────────────────────────
+FROM node:22.22.0-bookworm-slim AS console-builder
+
+WORKDIR /console
+COPY console/package.json console/package-lock.json ./
+RUN npm ci
+COPY console/ ./
+RUN npm run build
+
+# ── Stage 2: Python builder ─────────────────────────────────
+FROM python:3.11.14-slim-bookworm AS builder
+
+ARG INSTALL_LOCAL_ML=false
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -12,7 +23,8 @@ ENV PYTHONUNBUFFERED=1 \
     POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
     HF_HOME=/app/.cache \
-    SENTENCE_TRANSFORMERS_HOME=/app/.cache
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache \
+    TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -25,24 +37,25 @@ WORKDIR /app
 
 COPY pyproject.toml poetry.lock ./
 
-RUN poetry sync --no-root \
-    && TORCH_VER=$(/app/.venv/bin/python -c "import torch; print(torch.__version__.split('+')[0])") \
-    && /app/.venv/bin/pip install --no-cache-dir --no-deps --force-reinstall \
-       "torch==${TORCH_VER}" \
-       --index-url https://download.pytorch.org/whl/cpu \
+RUN if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
+        poetry sync --no-root --only main --with local-ml; \
+    else \
+        poetry sync --no-root --only main; \
+    fi \
+    && mkdir -p "$TIKTOKEN_CACHE_DIR" \
+    && /app/.venv/bin/python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
     && rm -rf /root/.cache /tmp/*
 
 COPY src/ ./src/
 COPY scripts/preload_docker_models.py ./scripts/
 
-RUN --mount=type=secret,id=HF_TOKEN,required=false \
-    export HF_TOKEN="$(cat /run/secrets/HF_TOKEN 2>/dev/null || true)" \
-    && export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
-    && /app/.venv/bin/python scripts/preload_docker_models.py \
+RUN if [ "$INSTALL_LOCAL_ML" = "true" ]; then \
+        /app/.venv/bin/python scripts/preload_docker_models.py; \
+    fi \
     && rm -rf /root/.cache /tmp/*
 
-# ── Stage 2: runtime ────────────────────────────────────────
-FROM python:3.11-slim
+# ── Stage 3: runtime ────────────────────────────────────────
+FROM python:3.11.14-slim-bookworm
 
 ARG BUILD_DATE
 ARG BUILD_SHA
@@ -55,19 +68,18 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     HF_HOME=/app/.cache \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache \
+    TIKTOKEN_CACHE_DIR=/app/.cache/tiktoken \
     PIP_NO_CACHE_DIR=1 \
     PIP_RETRIES=8 \
     PIP_TIMEOUT=900 \
     PIP_DEFAULT_TIMEOUT=900
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     curl \
+    util-linux \
     && rm -rf /var/lib/apt/lists/* \
-    && GOSU_VERSION=1.19 \
-    && dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" \
-    && curl -fsSL -o /usr/local/bin/gosu \
-       "https://github.com/tianon/gosu/releases/download/${GOSU_VERSION}/gosu-${dpkgArch}" \
-    && chmod +x /usr/local/bin/gosu \
+    && python -m pip uninstall -y setuptools wheel \
     && groupadd -r appuser && useradd -r -g appuser -m appuser
 
 WORKDIR /app
@@ -76,6 +88,7 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/.cache /app/.cache
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/pyproject.toml /app/
+COPY --from=console-builder /console/dist /app/console/dist
 COPY entrypoint.sh ./
 
 RUN chmod +x /app/entrypoint.sh
@@ -86,7 +99,7 @@ VOLUME ["/app/plugins"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=5 \
-    CMD curl -f http://localhost:8000/docs || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 USER root
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -656,6 +656,16 @@ def ingest_data(self, args: dict):
         with track_stage(cost_ledger, "embed"):
             cost_ledger.embed.add_usage(calls=1)
 
+        if payload.skip_enrichment:
+            set_ingestion_task_status(
+                self.request.id,
+                payload.brain_id,
+                "completed",
+                stage="completed",
+                cost=cost_ledger.to_dict(),
+            )
+            return self.request.id
+
         if config.pipeline_mode == "accurate" and config.run_observations:
             with track_stage(cost_ledger, "observations"):
                 observations = observations_agent.observe(
@@ -967,19 +977,26 @@ def process_architect_relationships(self, args: dict):
                         print(f"> Processing node {node_data.name}")
                         try:
                             future.result(timeout=180)
+                            props = {
+                                k: v
+                                for k, v in (node_data.properties or {}).items()
+                                if v is not None
+                            }
+                            labels = [node_data.type]
+                            extra = props.get("catalog_labels") or []
+                            if isinstance(extra, str):
+                                extra = [extra]
+                            for item in extra:
+                                label = str(item).strip()
+                                if label and label not in labels:
+                                    labels.append(label)
                             graph_nodes.append(
                                 Node(
                                     uuid=node_data.uuid,
-                                    labels=[node_data.type],
+                                    labels=labels,
                                     name=node_data.name,
                                     description=node_data.description,
-                                    properties={
-                                        k: v
-                                        for k, v in (
-                                            node_data.properties or {}
-                                        ).items()
-                                        if v is not None
-                                    },
+                                    properties=props,
                                     polarity=(
                                         node_data.polarity
                                         if node_data.polarity

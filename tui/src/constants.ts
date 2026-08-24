@@ -236,6 +236,14 @@ export const ENV_KEYS = {
   embeddingDataDimension: "EMBEDDING_DATA_DIMENSION",
   embeddingRelationshipsDimension: "EMBEDDING_RELATIONSHIPS_DIMENSION",
   enabledPlugins: "ENABLED_PLUGINS",
+  searchEnabled: "SEARCH_ENABLED",
+  searchUseDense: "SEARCH_USE_DENSE",
+  searchUseBm25: "SEARCH_USE_BM25",
+  searchFusion: "SEARCH_FUSION",
+  searchFusionAlpha: "SEARCH_FUSION_ALPHA",
+  searchBm25K1: "SEARCH_BM25_K1",
+  searchBm25B: "SEARCH_BM25_B",
+  contextPassageMode: "CONTEXT_PASSAGE_MODE",
 } as const;
 
 export const SERVICE_COMPOSE_FILES = {

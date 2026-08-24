@@ -71,6 +71,56 @@ def validate_ingest_architect_prior_context(
     )
 
 
+def validate_search_fusion(value: str | None) -> Literal["rrf", "cc"]:
+    normalized = (value or "rrf").strip().lower()
+    if normalized in ("rrf", "cc"):
+        return normalized  # type: ignore[return-value]
+    raise ValueError(
+        f"Invalid SEARCH_FUSION: {value!r}. Expected 'rrf' or 'cc'."
+    )
+
+
+def validate_context_passage_mode(
+    value: str | None,
+) -> Literal["hybrid", "bm25", "dense", "ilike"]:
+    normalized = (value or "hybrid").strip().lower()
+    if normalized in ("hybrid", "bm25", "dense", "ilike"):
+        return normalized  # type: ignore[return-value]
+    raise ValueError(
+        f"Invalid CONTEXT_PASSAGE_MODE: {value!r}. "
+        "Expected 'hybrid', 'bm25', 'dense', or 'ilike'."
+    )
+
+
+def validate_search_config(
+    *,
+    enabled: bool,
+    use_dense: bool,
+    use_bm25: bool,
+    data_db: str,
+    bm25_k1: float,
+    bm25_b: float,
+) -> None:
+    if bm25_k1 <= 0:
+        raise ValueError(f"Invalid SEARCH_BM25_K1: {bm25_k1!r}. Must be > 0.")
+    if not 0.0 <= bm25_b <= 1.0:
+        raise ValueError(
+            f"Invalid SEARCH_BM25_B: {bm25_b!r}. Must be between 0 and 1."
+        )
+    if not enabled:
+        return
+    if use_bm25 and (data_db or "").strip().lower() != "postgresql":
+        raise ValueError(
+            "SEARCH_USE_BM25=true requires DATA_DB=postgresql "
+            "(BM25 indexes are Postgres-only)."
+        )
+    if not use_dense and not use_bm25:
+        raise ValueError(
+            "SEARCH_ENABLED=true requires SEARCH_USE_DENSE=true "
+            "and/or SEARCH_USE_BM25=true."
+        )
+
+
 class AzureConfig:
     """
     Configuration class for the Azure configuration.
@@ -253,6 +303,7 @@ class RedisConfig:
         self.host = os.getenv("REDIS_HOST")
         port_str = os.getenv("REDIS_PORT")
         self.port = int(port_str) if port_str else None
+        self.password = os.getenv("REDIS_PASSWORD") or None
 
         if [self.host, self.port].count(None) > 0:
             raise ValueError("Redis configuration is not complete")
@@ -452,6 +503,7 @@ class SpacyConfig:
         )
 
 
+SEARCH_FTS_REGCONFIGS = frozenset({"italian", "spanish", "simple"})
 _MODES = ("local", "remote")
 _PROVIDERS = (
     "ollama",
@@ -645,6 +697,55 @@ class Config:
         self.agentic_architecture: Literal["custom", "langchain"] = os.getenv(
             "AGENTIC_ARCHITECTURE", "custom"
         )
+        self.search_enabled = os.getenv("SEARCH_ENABLED", "false") == "true"
+        self.search_use_dense = os.getenv("SEARCH_USE_DENSE", "true") == "true"
+        self.search_use_bm25 = os.getenv("SEARCH_USE_BM25", "true") == "true"
+        community_raw = os.getenv("SEARCH_COMMUNITY_LABELS", "TYPE,CLASS,TOPIC")
+        community_labels = [
+            part.strip() for part in community_raw.split(",") if part.strip()
+        ]
+        self.search_community_labels = community_labels or [
+            "TYPE",
+            "CLASS",
+            "TOPIC",
+        ]
+        self.search_neighbor_fanout = int(os.getenv("SEARCH_NEIGHBOR_FANOUT", "50"))
+        self.search_fusion: Literal["rrf", "cc"] = validate_search_fusion(
+            os.getenv("SEARCH_FUSION", "rrf")
+        )
+        self.search_fusion_alpha = float(os.getenv("SEARCH_FUSION_ALPHA", "0.5"))
+        self.search_literal_fill = os.getenv("SEARCH_LITERAL_FILL", "false") == "true"
+        self.search_bm25_k1 = float(os.getenv("SEARCH_BM25_K1", "1.2"))
+        self.search_bm25_b = float(os.getenv("SEARCH_BM25_B", "0.75"))
+        self.search_fts_regconfig = os.getenv("SEARCH_FTS_REGCONFIG", "").strip().lower()
+        self.search_fts_brains = frozenset(
+            part.strip()
+            for part in os.getenv("SEARCH_FTS_BRAINS", "").split(",")
+            if part.strip()
+        )
+        self.context_passage_mode: Literal[
+            "hybrid", "bm25", "dense", "ilike"
+        ] = validate_context_passage_mode(
+            os.getenv("CONTEXT_PASSAGE_MODE", "hybrid")
+        )
+        validate_search_config(
+            enabled=self.search_enabled,
+            use_dense=self.search_use_dense,
+            use_bm25=self.search_use_bm25,
+            data_db=self.data_db,
+            bm25_k1=self.search_bm25_k1,
+            bm25_b=self.search_bm25_b,
+        )
+
+    def search_fts_regconfig_for_brain(self, brain_id: str) -> str | None:
+        bid = (brain_id or "").strip()
+        if not bid.lower().startswith("searchbench"):
+            return None
+        if bid not in self.search_fts_brains:
+            return None
+        if self.search_fts_regconfig not in SEARCH_FTS_REGCONFIGS:
+            return None
+        return self.search_fts_regconfig
 
 
 config = Config()

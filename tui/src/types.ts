@@ -12,6 +12,7 @@ export type ModelProvider =
   | "amazon_bedrock";
 export type OcrMode = "docparser" | "docling";
 export type PipelineMode = "accurate" | "lightweight";
+export type SearchRetrieval = "hybrid" | "dense" | "bm25";
 export type ServicesRuntime = "docker" | "manual";
 export type PluginSource = "local" | "registry";
 
@@ -156,6 +157,11 @@ export interface PipelineChoices {
   ocrMode: OcrMode;
 }
 
+export interface SearchChoices {
+  enabled: boolean;
+  retrieval: SearchRetrieval;
+}
+
 export interface PluginChoice {
   name: string;
   source: PluginSource;
@@ -167,6 +173,7 @@ export interface InitChoices {
   dbs: DbChoices;
   models: ModelsChoices;
   pipeline: PipelineChoices;
+  search: SearchChoices;
   connections: Connections;
   auth: AuthChoices;
   plugins: PluginChoice[];

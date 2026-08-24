@@ -48,6 +48,13 @@ class SourceTextHelperTests(unittest.TestCase):
             data={"data_type": "text", "text_data": "hello world"},
             brain_id="brain1",
         )
+        self.assertFalse(payload.skip_enrichment)
+        skipped = IngestionTaskArgs(
+            data={"data_type": "text", "text_data": "catalog row"},
+            brain_id="brain1",
+            skip_enrichment=True,
+        )
+        self.assertTrue(skipped.skip_enrichment)
         self.assertEqual(source_text_from_payload(payload), "hello world")
 
     def test_source_text_from_json_payload(self):
@@ -115,7 +122,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             )
             return ["obs-1"]
 
-        def fake_enrich(text, targeting=None, brain_id="default"):
+        def fake_enrich(text, targeting=None, brain_id="default", **kwargs):
             from src.core.saving.auto_kg import EnrichmentOrchestrationResult
 
             enrich_calls.append({"text": text, "brain_id": brain_id})
@@ -143,6 +150,7 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
             patch.object(ingestion_mod, "observations_agent") as observations_agent,
             patch.object(ingestion_mod, "enrich_kg_from_input", side_effect=fake_enrich),
             patch.object(ingestion_mod.config, "pipeline_mode", "accurate"),
+            patch.object(ingestion_mod.config, "run_observations", True),
             patch.object(ingestion_mod, "set_ingestion_task_status"),
             patch("celery.chain") as chain_mock,
         ):
@@ -170,6 +178,65 @@ class IngestDataObservationAndEnrichmentTests(unittest.TestCase):
         self.assertEqual(len(enrich_calls), 1)
         self.assertEqual(enrich_calls[0]["text"], expected_text)
         self.assertEqual(enrich_calls[0]["brain_id"], "tenant-a")
+
+    def test_skip_enrichment_writes_chunk_without_kg(self):
+        from src.constants.embeddings import Vector
+        from src.workers.tasks import ingestion as ingestion_mod
+
+        enrich_calls = []
+        observe_calls = []
+
+        def fake_save_text_chunk(chunk, brain_id="default"):
+            return chunk
+
+        def fake_enrich(*args, **kwargs):
+            enrich_calls.append(kwargs)
+            raise AssertionError("enrichment should be skipped")
+
+        def fake_observe(**kwargs):
+            observe_calls.append(kwargs)
+            raise AssertionError("observations should be skipped")
+
+        task = ingestion_mod.ingest_data
+        request = self._make_request()
+        args = {
+            "data": {"data_type": "text", "text_data": "DOCID p1. Title: kettle"},
+            "brain_id": "searchbenchesci",
+            "skip_enrichment": True,
+        }
+
+        with (
+            patch.object(ingestion_mod, "data_adapter") as data_adapter,
+            patch.object(ingestion_mod, "embeddings_adapter") as embeddings_adapter,
+            patch.object(ingestion_mod, "vector_store_adapter") as vector_store_adapter,
+            patch.object(ingestion_mod, "cache_adapter"),
+            patch.object(ingestion_mod, "observations_agent") as observations_agent,
+            patch.object(ingestion_mod, "enrich_kg_from_input", side_effect=fake_enrich),
+            patch.object(ingestion_mod.config, "pipeline_mode", "accurate"),
+            patch.object(ingestion_mod, "set_ingestion_task_status") as set_status,
+        ):
+            data_adapter.save_text_chunk.side_effect = fake_save_text_chunk
+            embeddings_adapter.embed_text.return_value = Vector(
+                id="v1", embeddings=[0.1, 0.2], metadata={}
+            )
+            observations_agent.observe.side_effect = fake_observe
+            vector_store_adapter.add_vectors.return_value = ["v1"]
+            result = task.run.__func__(
+                type("Bound", (), {"request": request})(),
+                args,
+            )
+
+        self.assertEqual(result, "task-123")
+        self.assertEqual(observe_calls, [])
+        self.assertEqual(enrich_calls, [])
+        self.assertTrue(data_adapter.save_text_chunk.called)
+        self.assertTrue(embeddings_adapter.embed_text.called)
+        completed = [
+            call
+            for call in set_status.call_args_list
+            if call.args and call.args[2] == "completed"
+        ]
+        self.assertTrue(completed)
 
     def test_invalid_pipeline_mode_fails_ingest(self):
         from src.workers.tasks import ingestion as ingestion_mod
