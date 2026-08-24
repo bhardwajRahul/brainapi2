@@ -32,6 +32,9 @@ for key, value in ENV_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
 CHATBOT_PLUGIN_DIR = Path(__file__).resolve().parent.parent / "plugins" / "chatbot"
+if not (CHATBOT_PLUGIN_DIR / "main.py").is_file():
+    raise unittest.SkipTest("optional chatbot plugin is not installed")
+
 if str(CHATBOT_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(CHATBOT_PLUGIN_DIR))
 
