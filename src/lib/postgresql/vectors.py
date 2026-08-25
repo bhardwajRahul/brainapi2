@@ -23,7 +23,12 @@ from src.adapters.interfaces.embeddings import VectorStoreClient
 from src.config import config
 from src.constants.embeddings import EMBEDDING_STORES_SIZES, Vector
 
-from ._provisioning import borrow, ensure_brain_database, get_brain_pool
+from ._provisioning import (
+    borrow,
+    clear_brain_database,
+    ensure_brain_database,
+    get_brain_pool,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -141,6 +146,9 @@ class PostgreSQLVectorStoreClient(VectorStoreClient):
                     cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
                 conn.commit()
             self._brain_extensions_ready.add(brain_id)
+
+    def clear_brain_data(self, brain_id: str) -> None:
+        clear_brain_database(brain_id, table_prefixes=("vectors_",))
 
     def _ensure_store(self, store: str, brain_id: str) -> None:
         if store not in EMBEDDING_STORES_SIZES:

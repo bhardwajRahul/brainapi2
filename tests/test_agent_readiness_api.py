@@ -328,7 +328,10 @@ class OpenApiContractTests(unittest.TestCase):
                     "#/components/schemas/ErrorResponse",
                 )
 
-        self.assertNotIn("/system/brains/{brain_id}/reset", schema["paths"])
+        self.assertIn("/system/brains/{brain_id}/clear", schema["paths"])
+        self.assertIn("post", schema["paths"]["/system/brains/{brain_id}/clear"])
+        self.assertIn("/system/brains/{brain_id}", schema["paths"])
+        self.assertIn("delete", schema["paths"]["/system/brains/{brain_id}"])
         self.assertIn("202", schema["paths"]["/ingest/file"]["post"]["responses"])
 
         generic_refs = [

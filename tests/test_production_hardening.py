@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.services.api.errors import install_error_handlers
 from src.services.api.middlewares.auth import BrainPATMiddleware
 from src.services.api.routes.system import system_router
+from src.services.brain_lifecycle import BrainLifecycleResult
 from src.workers.redis_url import redis_connection_url
 
 
@@ -34,8 +35,6 @@ def test_malformed_authorization_fails_closed_with_401():
 @pytest.mark.parametrize(
     ("path", "method", "operation"),
     [
-        ("/system/brains/demo/reset", "get", "reset"),
-        ("/system/brains/demo/delete", "get", "delete"),
         ("/system/brains/demo/create-backup", "post", "create-backup"),
     ],
 )
@@ -49,6 +48,43 @@ def test_unfinished_system_routes_return_structured_501(path, method, operation)
     assert response.status_code == 501
     assert response.json()["error"]["code"] == "not_implemented"
     assert response.json()["operation"] == operation
+
+
+class _LifecycleStub:
+    def clear(self, brain_id: str):
+        return BrainLifecycleResult(
+            brain_id=brain_id,
+            operation="clear",
+            existed=True,
+            cleared_backends=["data", "graph", "vectors", "cache"],
+        )
+
+    def delete(self, brain_id: str):
+        return BrainLifecycleResult(
+            brain_id=brain_id,
+            operation="delete",
+            existed=True,
+            cleared_backends=["data", "graph", "vectors", "cache"],
+        )
+
+
+def test_brain_lifecycle_routes_use_non_get_destructive_methods():
+    app = FastAPI()
+    install_error_handlers(app)
+    app.include_router(system_router)
+
+    with patch(
+        "src.services.api.routes.system.get_brain_lifecycle_service",
+        return_value=_LifecycleStub(),
+    ):
+        client = TestClient(app)
+        cleared = client.post("/system/brains/demo/clear")
+        deleted = client.delete("/system/brains/demo")
+
+    assert cleared.status_code == 200
+    assert cleared.json()["operation"] == "clear"
+    assert deleted.status_code == 200
+    assert deleted.json()["operation"] == "delete"
 
 
 def test_cors_defaults_and_production_wildcard_guard():

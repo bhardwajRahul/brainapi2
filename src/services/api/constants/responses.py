@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, JsonValue, RootModel
 
 from src.constants.data import KGChanges, Observation, StructuredData, TextChunk
@@ -17,6 +19,14 @@ class IngestionAcceptedResponse(BaseModel):
 class LoginInfoResponse(BaseModel):
     is_system_pat: bool
     brain_id: str
+
+
+class BrainLifecycleResponse(BaseModel):
+    success: bool
+    brain_id: str
+    operation: Literal["clear", "delete"]
+    existed: bool
+    cleared_backends: list[str]
 
 
 class StringListResponse(RootModel[list[str]]):
@@ -142,4 +152,3 @@ class TaskStateResponse(BaseModel):
 
 class TaskListResponse(BaseModel):
     tasks: list[TaskStateResponse]
-

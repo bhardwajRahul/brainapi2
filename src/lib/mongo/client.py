@@ -174,6 +174,22 @@ class MongoClient(DataClient):
             for result in result
         ]
 
+    def clear_brain_data(self, brain_id: str) -> None:
+        protected = {
+            "admin",
+            "config",
+            "local",
+            config.mongo.system_database,
+        }
+        if brain_id in protected:
+            raise ValueError(f'Refusing to clear protected Mongo database "{brain_id}"')
+        self.client.drop_database(brain_id)
+
+    def delete_brain_registry(self, brain_id: str) -> bool:
+        collection = self.get_collection("brains", config.mongo.system_database)
+        result = collection.delete_one({"name_key": brain_id})
+        return result.deleted_count > 0
+
     def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:
         collection = self.get_collection("kg_changes", database=brain_id)
         collection.insert_one(kg_changes.model_dump(mode="json"))

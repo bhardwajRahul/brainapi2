@@ -37,6 +37,7 @@ from ._provisioning import (
     ensure_database_exists,
     get_brain_pool,
     get_system_pool,
+    clear_brain_database,
     list_brain_database_names,
 )
 
@@ -592,6 +593,20 @@ class PostgreSQLDataClient(DataClient):
                 by_key[suffix] = Brain(name_key=suffix)
 
         return sorted(by_key.values(), key=lambda brain: brain.name_key)
+
+    def clear_brain_data(self, brain_id: str) -> None:
+        clear_brain_database(brain_id)
+
+    def delete_brain_registry(self, brain_id: str) -> bool:
+        with self._system_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM data_brains WHERE name_key = %s",
+                    (brain_id,),
+                )
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
 
     def save_kg_changes(self, kg_changes: KGChanges, brain_id: str) -> KGChanges:
         document = kg_changes.model_dump(mode="json")

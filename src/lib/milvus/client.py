@@ -155,6 +155,29 @@ class MilvusClient(VectorStoreClient):
                         raise ValueError("Invalid Milvus configuration")
         return self._clients[brain_id]
 
+    def clear_brain_data(self, brain_id: str) -> None:
+        if config.milvus.uri and config.milvus.token:
+            connections.connect(
+                uri=config.milvus.uri,
+                token=config.milvus.token,
+                timeout=30,
+            )
+        elif config.milvus.host and config.milvus.port:
+            uri = f"http://{config.milvus.host}:{config.milvus.port}"
+            connections.connect(
+                uri=uri,
+                token=config.milvus.token if config.milvus.token else None,
+                timeout=30,
+            )
+        else:
+            raise ValueError("Invalid Milvus configuration")
+
+        if brain_id not in db.list_database():
+            return
+        client = self._get_client(brain_id)
+        for collection in client.list_collections():
+            client.drop_collection(collection_name=collection)
+
     def _ensure_store(self, store: str, brain_id: str) -> None:
         """
         Ensure the store exists and is loaded in the specified database.

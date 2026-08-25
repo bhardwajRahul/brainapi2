@@ -85,6 +85,27 @@ class RedisClient(CacheClient):
             return self.client.hdel(f"{brain_id}:_tasks", task_id)
         return self.client.delete(prefixed_key)
 
+    def clear_brain_data(self, brain_id: str) -> int:
+        """Delete only keys scoped to one brain without flushing shared Redis."""
+        deleted = 0
+        chunk = []
+        for key in self.client.scan_iter(match=f"{brain_id}:*", count=500):
+            chunk.append(key)
+            if len(chunk) == 500:
+                deleted += int(self.client.delete(*chunk))
+                chunk = []
+        if chunk:
+            deleted += int(self.client.delete(*chunk))
+        return deleted
+
+    def clear_brain_registry_cache(self, brain_id: str) -> int:
+        return int(
+            self.client.delete(
+                f"system:brain:{brain_id}",
+                f"system:brainpat:{brain_id}",
+            )
+        )
+
     def get_task_keys(self, brain_id: str) -> list[str]:
         """
         Get all task keys for a given brain_id.

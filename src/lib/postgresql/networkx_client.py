@@ -28,6 +28,7 @@ from src.lib.postgresql.graph_store import (
     PostgreSQLGraphStore,
     _RelationshipProxy,
 )
+from src.lib.postgresql._provisioning import clear_brain_database
 from src.utils.serialization.data import always_dict
 
 
@@ -41,6 +42,10 @@ class NetworkXGraphClient(GraphClient):
 
     def ensure_database(self, database: str) -> None:
         self._store.ensure_database(database)
+
+    def clear_brain_data(self, brain_id: str) -> None:
+        clear_brain_database(brain_id, table_prefixes=("kg_",))
+        self._store.invalidate_brain(brain_id)
 
     def execute_operation(self, operation: str, brain_id: str) -> Any:
         self._store.ensure_database(brain_id)

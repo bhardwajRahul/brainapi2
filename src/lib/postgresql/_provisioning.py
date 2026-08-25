@@ -211,3 +211,47 @@ def list_brain_database_names() -> list[str]:
                 for row in cur.fetchall()
                 if row[0] != system_db
             ]
+
+
+def clear_brain_database(
+    brain_id: str,
+    *,
+    table_prefixes: tuple[str, ...] | None = None,
+) -> list[str]:
+    """Truncate every application table in one brain database.
+
+    The database and schemas remain in place so API and worker connection pools
+    stay valid. This makes an online clear safe across processes while removing
+    data, graph records, vectors, and plugin-owned tables in the public schema.
+    """
+    dbname = brain_db_name(brain_id)
+    maintenance = _registry.get(_maintenance_dbname())
+    with borrow(maintenance) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+            if cur.fetchone() is None:
+                return []
+
+    with borrow(get_brain_pool(brain_id)) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname = 'public' ORDER BY tablename"
+            )
+            tables = [
+                row[0]
+                for row in cur.fetchall()
+                if table_prefixes is None
+                or row[0].startswith(table_prefixes)
+            ]
+            if tables:
+                identifiers = sql.SQL(", ").join(
+                    sql.Identifier(table) for table in tables
+                )
+                cur.execute(
+                    sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+                        identifiers
+                    )
+                )
+        conn.commit()
+    return tables

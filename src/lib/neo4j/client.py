@@ -89,6 +89,14 @@ class Neo4jClient(GraphClient):
                 "If using Neo4j Community Edition, you can only use the default 'neo4j' database."
             )
 
+    def clear_brain_data(self, brain_id: str) -> None:
+        if not self._verify_database_accessible(brain_id):
+            return
+        self.driver.execute_query(
+            "MATCH (node) DETACH DELETE node",
+            database_=brain_id,
+        )
+
     def _verify_database_accessible(self, database: str) -> bool:
         """
         Verify that a database is accessible by executing a simple query.
