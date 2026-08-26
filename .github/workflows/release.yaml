@@ -21,20 +21,12 @@ jobs:
         with:
           fetch-depth: 0
       - id: tag
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]]; then
-            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-          else
-            echo "Unsupported release tag: $GITHUB_REF_NAME" >&2
-            exit 1
-          fi
+        run: python scripts/release_version.py "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
       - name: Require tag version to match project metadata
         run: |
           project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
-          tag_version="${{ steps.tag.outputs.version }}"
-          normalized_version="${tag_version/-rc./rc}"
-          test "$project_version" = "$normalized_version"
+          expected_version="${{ steps.tag.outputs.project_version }}"
+          test "$project_version" = "$expected_version"
       - name: Require the tagged commit to be on main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 

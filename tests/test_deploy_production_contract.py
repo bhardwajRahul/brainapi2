@@ -185,6 +185,8 @@ def test_release_workflow_enforces_artifact_gate_before_publish():
     )
     assert "check_release_readiness.py gate-artifacts" in workflow
     assert "needs: [validate-tag, verify-required-checks]" in workflow
+    assert 'python scripts/release_version.py "$GITHUB_REF_NAME"' in workflow
+    assert "steps.tag.outputs.project_version" in workflow
 
 
 def test_mcp_has_only_one_lifespan_definition():
