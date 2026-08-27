@@ -11,7 +11,7 @@ Modified By: Christian Nonis <alch.infoemail@gmail.com>
 from datetime import datetime
 from typing import List, Literal, Optional, Tuple, TypedDict, Union
 import uuid
-from pydantic import BaseModel, ConfigDict, Extra, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.constants.data import Observation
 
@@ -55,7 +55,7 @@ class Node(BaseModel):
         Allow extra properties to be added to the node.
         """
 
-        extra = Extra.allow
+        extra = "allow"
 
 
 class Predicate(BaseModel):
